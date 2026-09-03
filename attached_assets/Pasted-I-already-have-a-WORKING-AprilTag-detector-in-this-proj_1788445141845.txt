@@ -1,0 +1,246 @@
+I already have a WORKING AprilTag detector in this project.
+
+IMPORTANT:
+
+Do not replace the existing AprilTag detection architecture.
+Do not replace the existing WASM files.
+Do not replace the existing worker.
+Do not switch to OpenCV-based AprilTag detection.
+Do not introduce CDN dependencies.
+Preserve the current working detection of tag36h11 IDs 0, 1, 2 and 3.
+
+I now want to extend this working app into a final product inspection system for two aluminium-profile products.
+
+The four AprilTags define the fixed inspection area:
+
+Tag 0 = top-left
+Tag 1 = top-right
+Tag 2 = bottom-left
+Tag 3 = bottom-right
+
+All 4 tags must be detected before product inspection starts.
+
+STEP 1 — NORMALIZED TOP VIEW
+
+Use the detected tag positions to create a perspective-corrected normalized top view of the area between the 4 tags.
+
+Use the tag center points or suitable corresponding tag corner points as the four perspective reference points.
+
+Create an output canvas of:
+
+800 × 800 px
+
+The result must always represent the same physical inspection area regardless of phone angle or perspective.
+
+If all 4 tags are not detected, do NOT perform product inspection.
+
+Show:
+
+Controle niet mogelijk — niet alle 4 referentietags zichtbaar.
+
+Also show the missing IDs.
+
+STEP 2 — PRODUCT SELECTION
+
+Add two selectable product configurations:
+
+Product 1
+
+Expected:
+
+H-shaped aluminium profile structure
+4 wheels
+handle present
+Product 2
+
+Expected:
+
+3 aluminium profiles
+1 × 630 mm profile
+2 × 370 mm profiles
+4 wheels
+NO handle
+
+For now, the selected product may be chosen manually in the test app.
+
+STEP 3 — ROI-BASED INSPECTION
+
+Do NOT try to recognize the entire product with AI.
+
+Use configurable Regions Of Interest (ROIs) on the normalized 800 × 800 image.
+
+Define ROI coordinates as percentages between 0 and 1 so they are easy to calibrate later.
+
+Example:
+
+type InspectionZone = {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  label: string;
+  threshold: number;
+};
+
+Product 1 should initially contain zones for:
+
+wheelTopLeft
+wheelTopRight
+wheelBottomLeft
+wheelBottomRight
+handle
+profileCenter
+
+Product 2 should initially contain zones for:
+
+wheelTopLeft
+wheelTopRight
+wheelBottomLeft
+wheelBottomRight
+profile630
+profile370A
+profile370B
+handleArea, which should be EMPTY
+
+Use placeholder ROI positions initially, but put all of them in one clearly editable configuration object.
+
+STEP 4 — IMAGE ANALYSIS
+
+Use simple deterministic computer vision for each ROI.
+
+Prefer browser-compatible image processing methods such as:
+
+grayscale
+edge detection
+edge density
+contrast
+contour-like connected regions if practical
+
+Do not use cloud AI or external APIs.
+
+For each ROI calculate at least:
+
+edge density
+pass/fail
+
+Optionally:
+
+contour count
+average brightness
+contrast
+
+Each threshold must be configurable.
+
+Do NOT pretend that the initial thresholds are calibrated.
+
+Make it clear in the UI that these are test thresholds until calibration is done.
+
+STEP 5 — PRODUCT 2 EMPTY HANDLE ZONE
+
+For Product 2, the handle zone works inversely:
+
+low activity / low edge density = OK
+clear object presence = NOK
+
+This zone should detect whether an unexpected handle/object is present.
+
+STEP 6 — RESULT
+
+After inspection, create a result object:
+
+{
+  product: 'product1' | 'product2',
+  context: 'final-qc',
+  status: 'ok' | 'error',
+  detectedTags: [0, 1, 2, 3],
+  checks: {
+    wheels: boolean,
+    profiles: boolean,
+    handle: boolean
+  },
+  errors: string[],
+  timestamp: Date.now()
+}
+
+Example errors:
+
+Wiel linksboven ontbreekt
+Wiel rechtsonder ontbreekt
+Handvat ontbreekt
+Onverwacht handvat gedetecteerd
+Profiel 630 mm niet gedetecteerd
+STEP 7 — DEBUG VIEW
+
+Add a debug mode.
+
+Show:
+
+original captured photo with AprilTag outlines and IDs
+normalized 800 × 800 top view
+normalized top view with ROI rectangles
+every ROI with:
+label
+edge-density value
+threshold
+OK / NOK
+
+Use green for passing zones and red for failing zones.
+
+STEP 8 — CALIBRATION MODE
+
+Add a simple calibration/debug section.
+
+I must be able to edit:
+
+x
+y
+width
+height
+threshold
+
+for every ROI.
+
+Store these calibration values in localStorage.
+
+Add:
+
+Reset calibration
+
+to restore the default values.
+
+The goal is that tomorrow I can place the real product on the board, take a photo, inspect the normalized top view, and then adjust the zones to match the real wheel/profile/handle positions.
+
+VERY IMPORTANT DEVELOPMENT RULES
+
+The existing AprilTag detector currently works.
+
+Before changing anything:
+
+create a checkpoint
+inspect the existing source code
+preserve the current worker + WASM detection
+
+Do not rewrite the working detector.
+
+Build the new functionality around it.
+
+If perspective correction cannot be implemented reliably without an additional library, install a browser-compatible npm package locally. Do not use runtime CDN scripts.
+
+Do not add mock inspection results.
+
+If an analysis step cannot be performed, report the technical failure rather than returning a fake pass.
+
+DEVELOPMENT ORDER
+
+Implement this in stages:
+
+Keep 4/4 tag detection working.
+Add and visually verify normalized top view.
+Add visible ROI rectangles only.
+Add ROI numerical analysis.
+Add pass/fail.
+Add calibration controls.
+
+Do not proceed to the next stage if the previous stage breaks the existing AprilTag detection.
+
+At the end, explain exactly which files were changed and confirm that the original 4-tag detection still works.

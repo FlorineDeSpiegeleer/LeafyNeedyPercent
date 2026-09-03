@@ -1,11 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, Camera, Check, CircleHelp, Crosshair, Info, LoaderCircle, RotateCcw, ScanLine, ShieldCheck } from 'lucide-react';
+import { AlertTriangle, Camera, Check, CircleHelp, Crosshair, Info, LoaderCircle, RotateCcw, ScanLine, ShieldCheck, SlidersHorizontal, Target, WandSparkles } from 'lucide-react';
+import {
+  NORMALIZED_SIZE,
+  type Detection,
+  type InspectionResult,
+  type ProductConfig,
+  type ProductId,
+  type InspectionZone,
+  imageDataToUrl,
+  inspectNormalizedImage,
+  loadProductConfigs,
+  normalizeImage,
+  resetProductConfigs,
+  saveProductConfigs,
+} from '@/lib/inspection';
 
-type Corner = { x: number; y: number };
-type Detection = { id: number; corners: Corner[]; center?: Corner };
 type CameraState = 'unavailable' | 'idle' | 'opening' | 'ready' | 'error';
 type DetectorState = 'checking' | 'ready' | 'error';
 type Capture = { url: string; width: number; height: number };
+type NormalizedView = { url: string; imageData: ImageData };
 
 const EXPECTED_IDS = [0, 1, 2, 3];
 const POSITION_LABELS = ['top-left', 'top-right', 'bottom-left', 'bottom-right'];
@@ -27,6 +40,13 @@ function App() {
   const [isDetecting, setIsDetecting] = useState(false);
   const [cameraMessage, setCameraMessage] = useState('');
   const [detectorMessage, setDetectorMessage] = useState('');
+  const [configs, setConfigs] = useState<Record<ProductId, ProductConfig>>(() => loadProductConfigs());
+  const [selectedProduct, setSelectedProduct] = useState<ProductId>('product1');
+  const [normalizedView, setNormalizedView] = useState<NormalizedView | null>(null);
+  const [inspection, setInspection] = useState<InspectionResult | null>(null);
+  const [inspectionMessage, setInspectionMessage] = useState('');
+  const [isNormalizing, setIsNormalizing] = useState(false);
+  const [debugMode, setDebugMode] = useState(true);
 
   const stopCamera = useCallback(() => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -70,6 +90,10 @@ function App() {
     };
   }, [stopCamera]);
 
+  useEffect(() => {
+    saveProductConfigs(configs);
+  }, [configs]);
+
   const openCamera = useCallback(async () => {
     if (!browserSupported) return;
     setCameraMessage('');
@@ -108,6 +132,9 @@ function App() {
     context.drawImage(video, 0, 0, canvas.width, canvas.height);
     setCapture({ url: canvas.toDataURL('image/jpeg', .94), width: canvas.width, height: canvas.height });
     setDetections(null);
+    setNormalizedView(null);
+    setInspection(null);
+    setInspectionMessage('');
     stopCamera();
     setCameraState('idle');
   }, [cameraState, stopCamera]);
@@ -125,10 +152,78 @@ function App() {
     workerRef.current.postMessage({ type: 'detect', pixels: grayscale.buffer, width: capture.width, height: capture.height }, [grayscale.buffer]);
   }, [capture, detectorState]);
 
+  const createNormalizedView = useCallback(() => {
+    if (!capture || !detections || detections.length === 0 || !canvasRef.current) return;
+    const missingIds = EXPECTED_IDS.filter((id) => !detections.some((detection) => detection.id === id));
+    if (missingIds.length > 0) {
+      setInspectionMessage(`Controle niet mogelijk — niet alle 4 referentietags zichtbaar. Missing IDs: ${missingIds.join(', ')}.`);
+      setNormalizedView(null);
+      setInspection(null);
+      return;
+    }
+    const context = canvasRef.current.getContext('2d');
+    if (!context) {
+      setInspectionMessage('The captured frame could not be read for normalization.');
+      return;
+    }
+    setIsNormalizing(true);
+    setInspectionMessage('');
+    window.setTimeout(() => {
+      try {
+        const source = context.getImageData(0, 0, capture.width, capture.height);
+        const imageData = normalizeImage(source, detections, NORMALIZED_SIZE);
+        if (!imageData) {
+          setInspectionMessage('Perspective correction failed. Capture all four tags clearly and try again.');
+          setNormalizedView(null);
+          return;
+        }
+        setNormalizedView({ imageData, url: imageDataToUrl(imageData) });
+        setInspection(null);
+      } catch {
+        setInspectionMessage('Perspective correction failed. The captured image could not be normalized.');
+        setNormalizedView(null);
+      } finally {
+        setIsNormalizing(false);
+      }
+    }, 0);
+  }, [capture, detections]);
+
+  const runInspection = useCallback(() => {
+    if (!normalizedView) return;
+    setInspectionMessage('');
+    try {
+      setInspection(inspectNormalizedImage(normalizedView.imageData, configs[selectedProduct], EXPECTED_IDS));
+    } catch {
+      setInspectionMessage('The ROI analysis could not be completed for this frame.');
+      setInspection(null);
+    }
+  }, [configs, normalizedView, selectedProduct]);
+
+  const updateZone = useCallback((productId: ProductId, zoneIndex: number, field: keyof Pick<InspectionZone, 'x' | 'y' | 'w' | 'h' | 'threshold'>, value: number) => {
+    const safeValue = Math.min(1, Math.max(0, value));
+    setConfigs((current) => ({
+      ...current,
+      [productId]: {
+        ...current[productId],
+        zones: current[productId].zones.map((zone, index) => index === zoneIndex ? { ...zone, [field]: safeValue } : zone),
+      },
+    }));
+    setInspection(null);
+  }, []);
+
+  const resetCalibration = useCallback(() => {
+    setConfigs(resetProductConfigs());
+    setInspection(null);
+    setInspectionMessage('Calibration values reset to the editable defaults.');
+  }, []);
+
   const retake = useCallback(() => {
     setCapture(null);
     setDetections(null);
     setCameraMessage('');
+    setNormalizedView(null);
+    setInspection(null);
+    setInspectionMessage('');
     setCameraState('idle');
   }, []);
 
@@ -297,6 +392,16 @@ function App() {
                 })}
               </div>
               {resultDetections.length === 0 && <div className="empty-result" data-testid="status-no-tags">No AprilTags were detected. Try more even lighting, move closer, and keep the white border visible.</div>}
+              {expectedFound < 4 && <div className="message error inspection-unavailable" data-testid="status-inspection-unavailable">
+                <AlertTriangle size={15} />
+                <span><strong>Controle niet mogelijk — niet alle 4 referentietags zichtbaar.</strong> Missing IDs: {missingIds.join(', ')}.</span>
+              </div>}
+              {expectedFound === 4 && !normalizedView && <div className="normalize-callout" data-testid="normalize-callout">
+                <div><Target size={17} /><span><strong>All four reference tags are visible.</strong><small>Create the fixed 800 × 800 top view before starting the inspection.</small></span></div>
+                <button className="button button-primary" onClick={createNormalizedView} disabled={isNormalizing} data-testid="button-normalize">
+                  {isNormalizing ? <LoaderCircle size={15} className="spin" /> : <WandSparkles size={15} />} {isNormalizing ? 'Normalizing…' : 'Create top view'}
+                </button>
+              </div>}
               <details className="debug-panel" data-testid="panel-debug">
                 <summary className="debug-summary">RAW DETECTIONS · {resultDetections.length} {resultDetections.length === 1 ? 'ID' : 'IDS'}</summary>
                 <div className="debug-body">
@@ -308,6 +413,104 @@ function App() {
                     </div>
                   ))}
                 </div>
+              </details>
+            </section>
+          )}
+
+          {normalizedView && expectedFound === 4 && (
+            <section className="panel inspection-panel" aria-labelledby="inspection-title">
+              <div className="inspection-header">
+                <div>
+                  <div className="eyebrow">Stage 2 / inspection setup</div>
+                  <h2 id="inspection-title">Normalized top view</h2>
+                  <p>Perspective-corrected reference area · {NORMALIZED_SIZE} × {NORMALIZED_SIZE} px · all 4 AprilTags confirmed.</p>
+                </div>
+                <button className={`button ${debugMode ? 'button-secondary' : 'button-quiet'}`} onClick={() => setDebugMode((current) => !current)} data-testid="button-toggle-debug">
+                  <SlidersHorizontal size={15} /> {debugMode ? 'Debug on' : 'Debug off'}
+                </button>
+              </div>
+
+              <div className="product-selector" aria-label="Product selection">
+                <div className="subsection-heading"><span>Product configuration</span><small>Choose manually for this test run</small></div>
+                <div className="product-options">
+                  {(Object.values(configs) as ProductConfig[]).map((product) => (
+                    <button
+                      key={product.id}
+                      className={`product-option ${selectedProduct === product.id ? 'selected' : ''}`}
+                      onClick={() => { setSelectedProduct(product.id); setInspection(null); }}
+                      data-testid={`button-${product.id}`}
+                    >
+                      <span className="product-radio" aria-hidden="true" />
+                      <span><strong>{product.name}</strong><small>{product.description}</small></span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="normalized-layout">
+                <div className="normalized-preview">
+                  <div className="preview-label">NORMALIZED / {configs[selectedProduct].name.toUpperCase()}</div>
+                  <div className="normalized-stage" data-testid="normalized-stage">
+                    <img src={normalizedView.url} alt="Perspective-corrected normalized inspection area" />
+                    {debugMode && <div className="roi-overlay" aria-hidden="true">
+                      {configs[selectedProduct].zones.map((zone) => {
+                        const zoneResult = inspection?.zones.find((result) => result.label === zone.label);
+                        return <span
+                          key={zone.label}
+                          className={`roi-rectangle ${zoneResult ? (zoneResult.pass ? 'pass' : 'fail') : ''}`}
+                          style={{ left: `${zone.x * 100}%`, top: `${zone.y * 100}%`, width: `${zone.w * 100}%`, height: `${zone.h * 100}%` }}
+                        ><b>{zone.label}</b></span>;
+                      })}
+                    </div>}
+                  </div>
+                </div>
+                <div className="inspection-side">
+                  <div className="side-note"><Info size={15} /><span><strong>Test thresholds</strong><small>Initial values are placeholders for calibration. They are not validated production limits.</small></span></div>
+                  <button className="button button-primary inspect-button" onClick={runInspection} data-testid="button-run-inspection"><Crosshair size={16} /> Run ROI inspection</button>
+                  {inspectionMessage && <div className="message error compact-message" data-testid="status-inspection-error"><AlertTriangle size={15} /><span>{inspectionMessage}</span></div>}
+                </div>
+              </div>
+
+              {inspection && (
+                <div className="inspection-result" data-testid="inspection-result">
+                  <div className="inspection-result-header">
+                    <div><h3>Inspection result</h3><p>{inspection.status === 'ok' ? 'All configured checks passed.' : 'One or more configured checks need attention.'}</p></div>
+                    <span className={`inspection-status ${inspection.status === 'ok' ? 'ok' : 'nok'}`}>{inspection.status === 'ok' ? 'OK' : 'NOK'}</span>
+                  </div>
+                  <div className="check-grid">
+                    <div className={inspection.checks.wheels ? 'check-pass' : 'check-fail'}><span>Wheels</span><b>{inspection.checks.wheels ? 'OK' : 'NOK'}</b></div>
+                    <div className={inspection.checks.profiles ? 'check-pass' : 'check-fail'}><span>Profiles</span><b>{inspection.checks.profiles ? 'OK' : 'NOK'}</b></div>
+                    <div className={inspection.checks.handle ? 'check-pass' : 'check-fail'}><span>Handle</span><b>{inspection.checks.handle ? 'OK' : 'NOK'}</b></div>
+                  </div>
+                  {inspection.errors.length > 0 && <div className="inspection-errors">{inspection.errors.map((error) => <div key={error}><AlertTriangle size={13} />{error}</div>)}</div>}
+                </div>
+              )}
+
+              {debugMode && inspection && (
+                <div className="roi-debug" data-testid="roi-debug">
+                  <div className="subsection-heading"><span>ROI measurements</span><small>Deterministic grayscale edge analysis</small></div>
+                  <div className="roi-table">
+                    <div className="roi-table-row roi-table-head"><span>Zone</span><span>Edge density</span><span>Threshold</span><span>Status</span></div>
+                    {inspection.zones.map((zone) => <div className="roi-table-row" key={zone.label}>
+                      <span className="roi-name">{zone.label}<small>{zone.expect === 'empty' ? 'empty zone' : 'presence zone'}</small></span>
+                      <span className="mono">{zone.edgeDensity.toFixed(3)}</span>
+                      <span className="mono">{zone.threshold.toFixed(3)}</span>
+                      <b className={zone.pass ? 'table-pass' : 'table-fail'}>{zone.pass ? 'OK' : 'NOK'}</b>
+                    </div>)}
+                  </div>
+                </div>
+              )}
+
+              <details className="calibration-block" open data-testid="calibration-panel">
+                <summary><span><SlidersHorizontal size={14} /> Calibration values</span><small>Saved locally on this device</small></summary>
+                <div className="calibration-intro">Edit percentages between 0 and 1. These are one shared configuration per product and are saved automatically in local storage.</div>
+                <div className="calibration-list">
+                  {configs[selectedProduct].zones.map((zone, index) => <div className="calibration-row" key={zone.label}>
+                    <div className="calibration-zone"><strong>{zone.label}</strong><small>{zone.expect === 'empty' ? 'must stay quiet' : 'object should be present'}</small></div>
+                    {(['x', 'y', 'w', 'h', 'threshold'] as const).map((field) => <label key={field}><span>{field}</span><input type="number" min="0" max="1" step="0.01" value={zone[field]} onChange={(event) => updateZone(selectedProduct, index, field, Number(event.target.value))} /></label>)}
+                  </div>)}
+                </div>
+                <button className="button button-quiet reset-calibration" onClick={resetCalibration} data-testid="button-reset-calibration"><RotateCcw size={14} /> Reset calibration</button>
               </details>
             </section>
           )}
