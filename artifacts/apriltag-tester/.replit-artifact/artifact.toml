@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "AprilTag Tester"
+description = "A client-side smartphone tool for opening the rear camera, capturing a full-resolution photo, and detecting tag36h11 AprilTags 0 through 3 with annotated results and debug coordinates."
+version = "1.0.0"
+id = "artifacts/apriltag-tester"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 24311
+
+[services.development]
+run = "pnpm --filter @workspace/apriltag-tester run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/apriltag-tester", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/apriltag-tester/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "24311"
+BASE_PATH = "/"
