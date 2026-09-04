@@ -1,16 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Camera, Check, CircleHelp, Crosshair, Info, LoaderCircle, RotateCcw, ScanLine, ShieldCheck, SlidersHorizontal, Target, WandSparkles } from 'lucide-react';
 import {
-  NORMALIZED_SIZE,
   type Detection,
   type InspectionResult,
+  type PhysicalDimensions,
   type ProductConfig,
   type ProductId,
   type InspectionZone,
+  distanceBetweenDetections,
   imageDataToUrl,
   inspectNormalizedImage,
   loadProductConfigs,
+  loadPhysicalDimensions,
   normalizeImage,
+  resetPhysicalDimensions,
   resetProductConfigs,
   saveProductConfigs,
 } from '@/lib/inspection';
@@ -47,6 +50,7 @@ function App() {
   const [inspectionMessage, setInspectionMessage] = useState('');
   const [isNormalizing, setIsNormalizing] = useState(false);
   const [debugMode, setDebugMode] = useState(true);
+  const [physicalDimensions, setPhysicalDimensions] = useState<PhysicalDimensions>(() => loadPhysicalDimensions());
 
   const stopCamera = useCallback(() => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -91,8 +95,8 @@ function App() {
   }, [stopCamera]);
 
   useEffect(() => {
-    saveProductConfigs(configs);
-  }, [configs]);
+    saveProductConfigs(configs, physicalDimensions);
+  }, [configs, physicalDimensions]);
 
   const openCamera = useCallback(async () => {
     if (!browserSupported) return;
@@ -171,7 +175,7 @@ function App() {
     window.setTimeout(() => {
       try {
         const source = context.getImageData(0, 0, capture.width, capture.height);
-        const imageData = normalizeImage(source, detections, NORMALIZED_SIZE);
+        const imageData = normalizeImage(source, detections, physicalDimensions);
         if (!imageData) {
           setInspectionMessage('Perspective correction failed. Capture all four tags clearly and try again.');
           setNormalizedView(null);
@@ -186,7 +190,7 @@ function App() {
         setIsNormalizing(false);
       }
     }, 0);
-  }, [capture, detections]);
+  }, [capture, detections, physicalDimensions]);
 
   const runInspection = useCallback(() => {
     if (!normalizedView) return;
@@ -217,6 +221,21 @@ function App() {
     setInspectionMessage('Calibration values reset to the editable defaults.');
   }, []);
 
+  const updatePhysicalDimension = useCallback((field: keyof PhysicalDimensions, value: number) => {
+    if (!Number.isFinite(value) || value <= 0) return;
+    setPhysicalDimensions((current) => ({ ...current, [field]: value }));
+    setNormalizedView(null);
+    setInspection(null);
+    setInspectionMessage('Reference dimensions changed. Create the corrected top view again.');
+  }, []);
+
+  const resetDimensions = useCallback(() => {
+    setPhysicalDimensions(resetPhysicalDimensions());
+    setNormalizedView(null);
+    setInspection(null);
+    setInspectionMessage('Reference dimensions reset to 650 × 860 mm.');
+  }, []);
+
   const retake = useCallback(() => {
     setCapture(null);
     setDetections(null);
@@ -232,6 +251,14 @@ function App() {
   const resultDetections = detections ?? [];
   const expectedFound = EXPECTED_IDS.filter((id) => foundIds.has(id)).length;
   const missingIds = EXPECTED_IDS.filter((id) => !foundIds.has(id));
+  const sourceDistances = useMemo(() => ({
+    top: distanceBetweenDetections(detections ?? [], 0, 1),
+    bottom: distanceBetweenDetections(detections ?? [], 2, 3),
+    left: distanceBetweenDetections(detections ?? [], 0, 2),
+    right: distanceBetweenDetections(detections ?? [], 1, 3),
+  }), [detections]);
+  const formatDistance = (value: number | null) => value === null ? '—' : `${value.toFixed(1)} px`;
+  const destinationAspectRatio = physicalDimensions.physicalWidthMm / physicalDimensions.physicalHeightMm;
 
   return (
     <div className="app-shell">
@@ -397,7 +424,7 @@ function App() {
                 <span><strong>Controle niet mogelijk — niet alle 4 referentietags zichtbaar.</strong> Missing IDs: {missingIds.join(', ')}.</span>
               </div>}
               {expectedFound === 4 && !normalizedView && <div className="normalize-callout" data-testid="normalize-callout">
-                <div><Target size={17} /><span><strong>All four reference tags are visible.</strong><small>Create the fixed 800 × 800 top view before starting the inspection.</small></span></div>
+                <div><Target size={17} /><span><strong>All four reference tags are visible.</strong><small>Create the {Math.round(physicalDimensions.physicalWidthMm)} × {Math.round(physicalDimensions.physicalHeightMm)} physical-scale top view before starting the inspection.</small></span></div>
                 <button className="button button-primary" onClick={createNormalizedView} disabled={isNormalizing} data-testid="button-normalize">
                   {isNormalizing ? <LoaderCircle size={15} className="spin" /> : <WandSparkles size={15} />} {isNormalizing ? 'Normalizing…' : 'Create top view'}
                 </button>
@@ -423,7 +450,7 @@ function App() {
                 <div>
                   <div className="eyebrow">Stage 2 / inspection setup</div>
                   <h2 id="inspection-title">Normalized top view</h2>
-                  <p>Perspective-corrected reference area · {NORMALIZED_SIZE} × {NORMALIZED_SIZE} px · all 4 AprilTags confirmed.</p>
+                  <p>Perspective-corrected reference area · {Math.round(physicalDimensions.physicalWidthMm)} × {Math.round(physicalDimensions.physicalHeightMm)} px · all 4 AprilTags confirmed.</p>
                 </div>
                 <button className={`button ${debugMode ? 'button-secondary' : 'button-quiet'}`} onClick={() => setDebugMode((current) => !current)} data-testid="button-toggle-debug">
                   <SlidersHorizontal size={15} /> {debugMode ? 'Debug on' : 'Debug off'}
@@ -448,20 +475,28 @@ function App() {
               </div>
 
               <div className="normalized-layout">
-                <div className="normalized-preview">
-                  <div className="preview-label">NORMALIZED / {configs[selectedProduct].name.toUpperCase()}</div>
-                  <div className="normalized-stage" data-testid="normalized-stage">
-                    <img src={normalizedView.url} alt="Perspective-corrected normalized inspection area" />
-                    {debugMode && <div className="roi-overlay" aria-hidden="true">
-                      {configs[selectedProduct].zones.map((zone) => {
-                        const zoneResult = inspection?.zones.find((result) => result.label === zone.label);
-                        return <span
-                          key={zone.label}
-                          className={`roi-rectangle ${zoneResult ? (zoneResult.pass ? 'pass' : 'fail') : ''}`}
-                          style={{ left: `${zone.x * 100}%`, top: `${zone.y * 100}%`, width: `${zone.w * 100}%`, height: `${zone.h * 100}%` }}
-                        ><b>{zone.label}</b></span>;
-                      })}
-                    </div>}
+                <div className="image-comparison" data-testid="image-comparison">
+                  <div className="normalized-preview">
+                    <div className="preview-label">ORIGINAL CAMERA IMAGE</div>
+                    <div className="normalized-stage original-stage">
+                      <img src={capture?.url} alt="Original captured camera image for comparison" />
+                    </div>
+                  </div>
+                  <div className="normalized-preview">
+                    <div className="preview-label">CORRECTED NORMALIZED TOP VIEW</div>
+                    <div className="normalized-stage" style={{ aspectRatio: `${physicalDimensions.physicalWidthMm} / ${physicalDimensions.physicalHeightMm}` }} data-testid="normalized-stage">
+                      <img src={normalizedView.url} alt="Perspective-corrected normalized inspection area" />
+                      {debugMode && <div className="roi-overlay" aria-hidden="true">
+                        {configs[selectedProduct].zones.map((zone) => {
+                          const zoneResult = inspection?.zones.find((result) => result.label === zone.label);
+                          return <span
+                            key={zone.label}
+                            className={`roi-rectangle ${zoneResult ? (zoneResult.pass ? 'pass' : 'fail') : ''}`}
+                            style={{ left: `${zone.x * 100}%`, top: `${zone.y * 100}%`, width: `${zone.w * 100}%`, height: `${zone.h * 100}%` }}
+                          ><b>{zone.label}</b></span>;
+                        })}
+                      </div>}
+                    </div>
                   </div>
                 </div>
                 <div className="inspection-side">
@@ -470,6 +505,19 @@ function App() {
                   {inspectionMessage && <div className="message error compact-message" data-testid="status-inspection-error"><AlertTriangle size={15} /><span>{inspectionMessage}</span></div>}
                 </div>
               </div>
+
+              {debugMode && <div className="geometry-debug" data-testid="geometry-debug">
+                <div className="subsection-heading"><span>Reference geometry</span><small>Tag-center distances from the captured frame</small></div>
+                <div className="geometry-grid">
+                  <div><span>Tag 0 → 1</span><b>{formatDistance(sourceDistances.top)}</b></div>
+                  <div><span>Tag 2 → 3</span><b>{formatDistance(sourceDistances.bottom)}</b></div>
+                  <div><span>Tag 0 → 2</span><b>{formatDistance(sourceDistances.left)}</b></div>
+                  <div><span>Tag 1 → 3</span><b>{formatDistance(sourceDistances.right)}</b></div>
+                  <div><span>Configured width</span><b>{physicalDimensions.physicalWidthMm.toFixed(0)} mm</b></div>
+                  <div><span>Configured height</span><b>{physicalDimensions.physicalHeightMm.toFixed(0)} mm</b></div>
+                  <div><span>Destination aspect ratio</span><b>{destinationAspectRatio.toFixed(3)} : 1</b></div>
+                </div>
+              </div>}
 
               {inspection && (
                 <div className="inspection-result" data-testid="inspection-result">
@@ -503,7 +551,15 @@ function App() {
 
               <details className="calibration-block" open data-testid="calibration-panel">
                 <summary><span><SlidersHorizontal size={14} /> Calibration values</span><small>Saved locally on this device</small></summary>
-                <div className="calibration-intro">Edit percentages between 0 and 1. These are one shared configuration per product and are saved automatically in local storage.</div>
+                <div className="calibration-intro">Set the physical reference rectangle first. Dimensions are saved locally and determine the normalized image aspect ratio. ROI values below remain percentages between 0 and 1.</div>
+                <div className="dimension-controls">
+                  <label><span>Physical reference width (mm)</span><input type="number" min="1" max="10000" step="1" value={physicalDimensions.physicalWidthMm} onChange={(event) => updatePhysicalDimension('physicalWidthMm', Number(event.target.value))} /></label>
+                  <label><span>Physical reference height (mm)</span><input type="number" min="1" max="10000" step="1" value={physicalDimensions.physicalHeightMm} onChange={(event) => updatePhysicalDimension('physicalHeightMm', Number(event.target.value))} /></label>
+                </div>
+                <div className="dimension-actions">
+                  <span>Current output: {Math.round(physicalDimensions.physicalWidthMm)} × {Math.round(physicalDimensions.physicalHeightMm)} px · approximately 1 px / mm</span>
+                  <button className="button button-quiet" onClick={resetDimensions} data-testid="button-reset-dimensions"><RotateCcw size={14} /> Reset dimensions</button>
+                </div>
                 <div className="calibration-list">
                   {configs[selectedProduct].zones.map((zone, index) => <div className="calibration-row" key={zone.label}>
                     <div className="calibration-zone"><strong>{zone.label}</strong><small>{zone.expect === 'empty' ? 'must stay quiet' : 'object should be present'}</small></div>
