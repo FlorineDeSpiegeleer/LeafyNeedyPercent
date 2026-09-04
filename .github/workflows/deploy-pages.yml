@@ -38,6 +38,15 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build AprilTag tester
+        # NIEUW: vite.config.ts eist deze twee omgevingsvariabelen altijd
+        # (ook bij een gewone build, waar PORT eigenlijk niet gebruikt
+        # wordt). Zonder deze regel stopt de build hier meteen met
+        # "PORT environment variable is required but was not provided."
+        # BASE_PATH moet overeenkomen met het GitHub Pages-pad van deze
+        # repo — voor een gewone projectpagina is dat /<repo-naam>/.
+        env:
+          PORT: "5000"
+          BASE_PATH: "/LeafyNeedyPercent/"
         run: pnpm --filter @workspace/apriltag-tester build
 
       - name: Setup Pages
