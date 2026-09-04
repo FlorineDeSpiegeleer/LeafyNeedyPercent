@@ -18,6 +18,7 @@ export type InspectionZone = {
   kind: ZoneKind;
   minEdgeDensity?: number;
   maxEdgeDensity?: number;
+  minContrast?: number;
 };
 
 export type ZoneResult = InspectionZone & {
@@ -43,42 +44,53 @@ export type InspectionResult = {
   timestamp: number;
 };
 
-/**
- * Referentievlak tussen de vier AprilTag-CENTRA.
- * Fysieke verhouding: 810 mm breed × 650 mm hoog.
- * We gebruiken dezelfde verhouding in pixels zodat het genormaliseerde beeld
- * niet meer vierkant wordt vervormd.
- */
 export const NORMALIZED_WIDTH = 810;
 export const NORMALIZED_HEIGHT = 650;
 
 /**
- * Product 1 referentie-layout gebaseerd op de door jou aangeleverde
- * bovenaanzicht-tekening: boven- en onderprofiel, centrale verticale balk,
- * vier wielen en het handvat bovenaan.
+ * Product 1 zones.
  *
- * De zones zijn bewust relatief (0..1), zodat ze exact hetzelfde blijven
- * werken wanneer het referentievlak later op een andere resolutie wordt
- * weergegeven.
+ * BELANGRIJKE FIX:
+ * De oude "handle"-zone liep tot y=0.16 en overlapte daardoor met het
+ * bovenste horizontale profiel (dat vanaf ongeveer y=0.12 begint).
+ * Daardoor kon het bovenprofiel genoeg randen produceren om het handvat
+ * ten onrechte als aanwezig te markeren.
+ *
+ * Het handvat wordt nu als 3 APARTE structuren gecontroleerd:
+ * - bovenrand
+ * - linker staander
+ * - rechter staander
+ *
+ * Deze zones liggen volledig BOVEN het hoofdprofiel en moeten ALLE DRIE
+ * slagen. Daardoor kan het bovenprofiel het handvat niet meer "faken".
  */
 export const PRODUCT1_ZONES: InspectionZone[] = [
-  // Horizontale hoofdprofielen
-  { id: 'topProfile', label: 'Bovenprofiel', x: 0.13, y: 0.12, w: 0.74, h: 0.15, kind: 'present', minEdgeDensity: 0.020 },
-  { id: 'bottomProfile', label: 'Onderprofiel', x: 0.14, y: 0.76, w: 0.73, h: 0.15, kind: 'present', minEdgeDensity: 0.020 },
+  // Hoofdprofielen
+  { id: 'topProfile', label: 'Bovenprofiel', x: 0.13, y: 0.12, w: 0.74, h: 0.15, kind: 'present', minEdgeDensity: 0.020, minContrast: 9 },
+  { id: 'bottomProfile', label: 'Onderprofiel', x: 0.14, y: 0.76, w: 0.73, h: 0.15, kind: 'present', minEdgeDensity: 0.020, minContrast: 9 },
+  { id: 'centerProfile', label: 'Middenprofiel', x: 0.42, y: 0.25, w: 0.17, h: 0.53, kind: 'present', minEdgeDensity: 0.018, minContrast: 9 },
 
-  // Centrale verticale verbinding
-  { id: 'centerProfile', label: 'Middenprofiel', x: 0.42, y: 0.25, w: 0.17, h: 0.53, kind: 'present', minEdgeDensity: 0.018 },
+  // Wielen
+  { id: 'wheelTopLeft', label: 'Wiel linksboven', x: 0.10, y: 0.13, w: 0.20, h: 0.24, kind: 'present', minEdgeDensity: 0.022, minContrast: 10 },
+  { id: 'wheelTopRight', label: 'Wiel rechtsboven', x: 0.71, y: 0.13, w: 0.20, h: 0.24, kind: 'present', minEdgeDensity: 0.022, minContrast: 10 },
+  { id: 'wheelBottomLeft', label: 'Wiel linksonder', x: 0.11, y: 0.68, w: 0.21, h: 0.23, kind: 'present', minEdgeDensity: 0.022, minContrast: 10 },
+  { id: 'wheelBottomRight', label: 'Wiel rechtsonder', x: 0.72, y: 0.68, w: 0.20, h: 0.23, kind: 'present', minEdgeDensity: 0.022, minContrast: 10 },
 
-  // Wielen links/rechts boven/onder
-  { id: 'wheelTopLeft', label: 'Wiel linksboven', x: 0.10, y: 0.13, w: 0.20, h: 0.24, kind: 'present', minEdgeDensity: 0.022 },
-  { id: 'wheelTopRight', label: 'Wiel rechtsboven', x: 0.71, y: 0.13, w: 0.20, h: 0.24, kind: 'present', minEdgeDensity: 0.022 },
-  { id: 'wheelBottomLeft', label: 'Wiel linksonder', x: 0.11, y: 0.68, w: 0.21, h: 0.23, kind: 'present', minEdgeDensity: 0.022 },
-  { id: 'wheelBottomRight', label: 'Wiel rechtsonder', x: 0.72, y: 0.68, w: 0.20, h: 0.23, kind: 'present', minEdgeDensity: 0.022 },
+  // HANDVAT — drie kleine zones, volledig boven het bovenprofiel.
+  // Bovenrand van het rechthoekige handvat
+  { id: 'handleTop', label: 'Handvat bovenrand', x: 0.40, y: 0.018, w: 0.21, h: 0.030, kind: 'present', minEdgeDensity: 0.018, minContrast: 8 },
 
-  // Handvat bovenaan in het midden
-  { id: 'handle', label: 'Handvat', x: 0.38, y: 0.02, w: 0.25, h: 0.14, kind: 'present', minEdgeDensity: 0.020 },
+  // Linker verticale staander
+  { id: 'handleLeft', label: 'Handvat links', x: 0.385, y: 0.030, w: 0.035, h: 0.075, kind: 'present', minEdgeDensity: 0.016, minContrast: 8 },
 
-  // Lege zones helpen voorkomen dat een willekeurig druk beeld toch slaagt.
+  // Rechter verticale staander
+  { id: 'handleRight', label: 'Handvat rechts', x: 0.595, y: 0.030, w: 0.035, h: 0.075, kind: 'present', minEdgeDensity: 0.016, minContrast: 8 },
+
+  // Extra lege zone tussen handvat en hoofdprofiel.
+  // Als hier ineens veel structuur zit, is de uitlijning waarschijnlijk fout.
+  { id: 'handleGap', label: 'Vrije zone onder handvat', x: 0.43, y: 0.090, w: 0.15, h: 0.022, kind: 'empty', maxEdgeDensity: 0.080 },
+
+  // Vrije zones links/rechts
   { id: 'emptyLeftCenter', label: 'Vrije zone links', x: 0.17, y: 0.40, w: 0.20, h: 0.22, kind: 'empty', maxEdgeDensity: 0.065 },
   { id: 'emptyRightCenter', label: 'Vrije zone rechts', x: 0.64, y: 0.40, w: 0.20, h: 0.22, kind: 'empty', maxEdgeDensity: 0.065 },
 ];
@@ -137,14 +149,6 @@ function homographyFromFourPoints(from: Corner[], to: Corner[]): number[] | null
   return solution ? [...solution, 1] : null;
 }
 
-/**
- * Maakt een perspectiefgecorrigeerd bovenaanzicht op basis van de CENTRA
- * van tag 0..3:
- *   0 = linksboven
- *   1 = rechtsboven
- *   2 = linksonder
- *   3 = rechtsonder
- */
 export function normalizeImage(
   source: ImageData,
   detections: Detection[],
@@ -152,6 +156,8 @@ export function normalizeImage(
   height = NORMALIZED_HEIGHT,
 ): ImageData | null {
   const byId = new Map(detections.map((detection) => [detection.id, detection]));
+
+  // 0 TL, 1 TR, 3 BR, 2 BL
   const sourcePoints = [0, 1, 3, 2]
     .map((id) => byId.get(id))
     .filter((detection): detection is Detection => Boolean(detection))
@@ -166,8 +172,6 @@ export function normalizeImage(
     { x: 0, y: height - 1 },
   ];
 
-  // We berekenen doel -> bron, zodat ieder doelpixel rechtstreeks uit de
-  // oorspronkelijke camerafoto wordt gelezen.
   const mapping = homographyFromFourPoints(destinationPoints, sourcePoints);
   if (!mapping) return null;
 
@@ -188,8 +192,6 @@ export function normalizeImage(
         continue;
       }
 
-      // Bilineaire interpolatie: duidelijker dan nearest-neighbour en dus
-      // stabieler voor de latere randanalyse.
       const x0 = Math.floor(sx);
       const y0 = Math.floor(sy);
       const x1 = Math.min(source.width - 1, x0 + 1);
@@ -223,7 +225,11 @@ export function imageDataToUrl(imageData: ImageData): string {
 
 function luminance(imageData: ImageData, x: number, y: number) {
   const i = (y * imageData.width + x) * 4;
-  return imageData.data[i] * 0.299 + imageData.data[i + 1] * 0.587 + imageData.data[i + 2] * 0.114;
+  return (
+    imageData.data[i] * 0.299 +
+    imageData.data[i + 1] * 0.587 +
+    imageData.data[i + 2] * 0.114
+  );
 }
 
 export function analyzeZone(imageData: ImageData, zone: InspectionZone): ZoneResult {
@@ -256,33 +262,71 @@ export function analyzeZone(imageData: ImageData, zone: InspectionZone): ZoneRes
   const contrast = Math.sqrt(Math.max(0, sumSquared / count - average * average));
   const edgeDensity = edgePixels / count;
 
-  const pass = zone.kind === 'present'
-    ? edgeDensity >= (zone.minEdgeDensity ?? 0.02)
-    : edgeDensity <= (zone.maxEdgeDensity ?? 0.06);
+  const edgePass =
+    zone.kind === 'present'
+      ? edgeDensity >= (zone.minEdgeDensity ?? 0.02)
+      : edgeDensity <= (zone.maxEdgeDensity ?? 0.06);
 
-  return { ...zone, edgeDensity, contrast, pass };
+  const contrastPass =
+    zone.kind === 'present'
+      ? contrast >= (zone.minContrast ?? 0)
+      : true;
+
+  return {
+    ...zone,
+    edgeDensity,
+    contrast,
+    pass: edgePass && contrastPass,
+  };
 }
 
 function resultFor(zones: ZoneResult[], id: string) {
   return zones.find((z) => z.id === id)?.pass ?? false;
 }
 
-export function inspectProduct1(imageData: ImageData, detectedTags: number[]): InspectionResult {
+export function inspectProduct1(
+  imageData: ImageData,
+  detectedTags: number[],
+): InspectionResult {
   const zones = PRODUCT1_ZONES.map((zone) => analyzeZone(imageData, zone));
 
-  const wheelIds = ['wheelTopLeft', 'wheelTopRight', 'wheelBottomLeft', 'wheelBottomRight'];
+  const wheelIds = [
+    'wheelTopLeft',
+    'wheelTopRight',
+    'wheelBottomLeft',
+    'wheelBottomRight',
+  ];
+
   const wheels = wheelIds.every((id) => resultFor(zones, id));
   const topProfile = resultFor(zones, 'topProfile');
   const bottomProfile = resultFor(zones, 'bottomProfile');
   const centerProfile = resultFor(zones, 'centerProfile');
-  const handle = resultFor(zones, 'handle');
-  const emptyZonesOk = resultFor(zones, 'emptyLeftCenter') && resultFor(zones, 'emptyRightCenter');
+
+  // FIX: handvat is pas OK als ALLE DRIE specifieke handvatzones slagen.
+  const handle =
+    resultFor(zones, 'handleTop') &&
+    resultFor(zones, 'handleLeft') &&
+    resultFor(zones, 'handleRight');
+
+  const handleGapOk = resultFor(zones, 'handleGap');
+
+  const emptyZonesOk =
+    resultFor(zones, 'emptyLeftCenter') &&
+    resultFor(zones, 'emptyRightCenter');
 
   const errors: string[] = [];
+
   if (!topProfile) errors.push('Bovenprofiel niet correct gedetecteerd');
   if (!bottomProfile) errors.push('Onderprofiel niet correct gedetecteerd');
   if (!centerProfile) errors.push('Middenprofiel niet correct gedetecteerd');
-  if (!handle) errors.push('Handvat niet correct gedetecteerd');
+
+  if (!handle) {
+    errors.push('Handvat ontbreekt of staat niet op de verwachte positie');
+  }
+
+  if (!handleGapOk) {
+    errors.push('Onverwachte structuur onder het handvat / uitlijning controleren');
+  }
 
   const wheelLabels: Record<string, string> = {
     wheelTopLeft: 'Wiel linksboven ontbreekt of staat niet op de verwachte plaats',
@@ -290,21 +334,38 @@ export function inspectProduct1(imageData: ImageData, detectedTags: number[]): I
     wheelBottomLeft: 'Wiel linksonder ontbreekt of staat niet op de verwachte plaats',
     wheelBottomRight: 'Wiel rechtsonder ontbreekt of staat niet op de verwachte plaats',
   };
+
   wheelIds.forEach((id) => {
     if (!resultFor(zones, id)) errors.push(wheelLabels[id]);
   });
-  if (!emptyZonesOk) errors.push('Onverwachte structuur in een vrije referentiezone');
 
-  const status = wheels && topProfile && bottomProfile && centerProfile && handle && emptyZonesOk
-    ? 'ok'
-    : 'error';
+  if (!emptyZonesOk) {
+    errors.push('Onverwachte structuur in een vrije referentiezone');
+  }
+
+  const status =
+    wheels &&
+    topProfile &&
+    bottomProfile &&
+    centerProfile &&
+    handle &&
+    handleGapOk &&
+    emptyZonesOk
+      ? 'ok'
+      : 'error';
 
   return {
     status,
     context: 'final-qc',
     product: 'product1',
     detectedTags,
-    checks: { wheels, topProfile, bottomProfile, centerProfile, handle },
+    checks: {
+      wheels,
+      topProfile,
+      bottomProfile,
+      centerProfile,
+      handle,
+    },
     errors,
     zones,
     timestamp: Date.now(),
