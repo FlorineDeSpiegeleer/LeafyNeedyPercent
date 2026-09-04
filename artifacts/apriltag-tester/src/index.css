@@ -125,3 +125,233 @@ button { font: inherit; }
   .checks-grid { grid-template-columns: 1fr 1fr; }
   .card-title-row, .normalized-heading { align-items: flex-start; flex-direction: column; }
 }
+
+
+/* ============================================================
+   REFERENCE COMPARISON EXTENSIONS
+============================================================ */
+
+.reference-card {
+  background: white;
+  border: 1px solid #dbe3ec;
+  border-radius: 18px;
+  padding: 20px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.05);
+  margin-bottom: 20px;
+}
+
+.reference-card-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.reference-card-heading h2 {
+  margin: 3px 0 5px;
+  font-size: 21px;
+  color: #0f172a;
+}
+
+.reference-card-heading p:not(.small-label) {
+  margin: 0;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.55;
+  max-width: 720px;
+}
+
+.reference-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border-radius: 999px;
+  padding: 7px 11px;
+  font-size: 10px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.reference-status.ready {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.reference-status.missing {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.reference-preview {
+  margin-top: 16px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 13px;
+  padding: 10px;
+}
+
+.reference-preview img {
+  width: 150px;
+  aspect-ratio: 810 / 650;
+  object-fit: cover;
+  border-radius: 9px;
+  border: 1px solid #cbd5e1;
+}
+
+.reference-preview div {
+  min-width: 0;
+}
+
+.reference-preview strong {
+  display: block;
+  color: #0f172a;
+  font-size: 14px;
+}
+
+.reference-preview span {
+  display: block;
+  color: #64748b;
+  font-size: 11px;
+  margin-top: 3px;
+}
+
+.reference-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 16px;
+  flex-wrap: wrap;
+}
+
+.reference-action {
+  min-height: 44px;
+  border: none;
+  border-radius: 11px;
+  padding: 0 15px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.reference-action:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.reference-action.primary {
+  background: #2563eb;
+  color: white;
+}
+
+.reference-action.danger {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.capture-mode-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.capture-mode-pill {
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+}
+
+.capture-mode-pill.inspection {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.capture-mode-pill.reference {
+  background: #e0e7ff;
+  color: #3730a3;
+}
+
+.capture-mode-warning {
+  color: #92400e;
+  background: #fef3c7;
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.dw-success {
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  color: #047857;
+  border-radius: 12px;
+  padding: 12px 14px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.comparison-preview-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin: 18px 0;
+}
+
+.comparison-preview-grid > div {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 10px;
+}
+
+.comparison-preview-grid img {
+  width: 100%;
+  aspect-ratio: 810 / 650;
+  object-fit: cover;
+  margin-top: 7px;
+  border-radius: 8px;
+  border: 1px solid #cbd5e1;
+}
+
+.check-tile small {
+  display: block;
+  font-size: 10px;
+  margin-top: 3px;
+  opacity: 0.72;
+}
+
+@media (max-width: 640px) {
+  .reference-card-heading {
+    flex-direction: column;
+  }
+
+  .reference-status {
+    align-self: flex-start;
+  }
+
+  .reference-preview img {
+    width: 105px;
+  }
+
+  .reference-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .comparison-preview-grid {
+    grid-template-columns: 1fr;
+  }
+}
