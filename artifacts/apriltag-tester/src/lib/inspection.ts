@@ -25,6 +25,11 @@ export type ProductConfig = {
   zones: InspectionZone[];
 };
 
+export type PhysicalDimensions = {
+  physicalWidthMm: number;
+  physicalHeightMm: number;
+};
+
 export type ZoneResult = InspectionZone & {
   edgeDensity: number;
   averageBrightness: number;
@@ -48,36 +53,196 @@ export type InspectionResult = {
 };
 
 export const CALIBRATION_STORAGE_KEY = 'apriltag-tester-calibration-v1';
-export const NORMALIZED_SIZE = 800;
+export const DEFAULT_PHYSICAL_DIMENSIONS: PhysicalDimensions = {
+  physicalWidthMm: 650,
+  physicalHeightMm: 860,
+};
+
+// NIEUW: de genormaliseerde afbeelding is exact 1 px = 1 mm (zie
+// normalizeImage hieronder, die de ImageData-breedte/hoogte rechtstreeks
+// van physicalWidthMm/physicalHeightMm afleidt). Dat betekent dat we de
+// inspectiezones rechtstreeks vanuit de échte onderdeel-afmetingen kunnen
+// opbouwen, in plaats van percentages te gokken.
+//
+// Aangeleverde afmetingen (met tolerantie voor handmatige plaatsing en
+// webcam-onnauwkeurigheid — geen precisiemeting):
+//   - Lange, dunne profielen: 630 × 30 mm
+//   - Dik middenprofiel (enkel Product 1): 370 × 60 mm
+//   - Wielen: 60 × 60 mm
+//   - Handvat: 110 × 40 mm
+const PART_MM = {
+  profileLong: { w: 630, h: 30 }, // het gewone 630 mm profiel, liggend (breed × dik)
+  profileShortThick: { w: 60, h: 370 }, // het dikke 370×60 mm profiel, hier RECHTOP gemonteerd (dus 60 mm breed × 370 mm hoog)
+  profileShortThin: { w: 370, h: 30 }, // een gewoon 370 mm profiel (Product 2), liggend
+  wheel: { w: 60, h: 60 },
+  handle: { w: 110, h: 40 },
+};
+
+// Tolerantie: hoeveel marge (in mm) elke zone extra krijgt rond het
+// onderdeel, om kleine plaatsings- en meetonzekerheid op te vangen.
+// Voor 'empty'-zones (waar net NIETS mag staan) passen we geen marge toe,
+// om te vermijden dat een naburig onderdeel per ongeluk meegeteld wordt.
+const TOLERANCE_MM = 15;
+
+type ZoneDraft = {
+  label: string;
+  expect: 'present' | 'empty';
+  threshold: number;
+  /** Positie + afmeting in mm, gemeten vanaf de linkerbovenhoek van het
+   *  fysieke referentiekader (physicalWidthMm × physicalHeightMm). */
+  xMm: number;
+  yMm: number;
+  wMm: number;
+  hMm: number;
+  /** Standaard TOLERANCE_MM; zet op 0 voor 'empty'-zones. */
+  toleranceMm?: number;
+};
+
+function zoneFromMm(draft: ZoneDraft, board: PhysicalDimensions = DEFAULT_PHYSICAL_DIMENSIONS): InspectionZone {
+  const tolerance = draft.toleranceMm ?? TOLERANCE_MM;
+  const xMm = draft.xMm - tolerance;
+  const yMm = draft.yMm - tolerance;
+  const wMm = draft.wMm + tolerance * 2;
+  const hMm = draft.hMm + tolerance * 2;
+  return {
+    label: draft.label,
+    expect: draft.expect,
+    threshold: draft.threshold,
+    x: Math.max(0, xMm / board.physicalWidthMm),
+    y: Math.max(0, yMm / board.physicalHeightMm),
+    w: Math.min(1, wMm / board.physicalWidthMm),
+    h: Math.min(1, hMm / board.physicalHeightMm),
+  };
+}
+
+// ------------------------------------------------------------------
+// PRODUCT 1 — H-vormige opbouw met handvat (zie referentieschema):
+// een handvat bovenaan, twee 630 mm profielen (boven en onder) met
+// telkens 2 wielen aan de uiteinden, en het dikke 370×60 mm profiel
+// rechtop gemonteerd in het midden tussen beide 630 mm profielen.
+// ------------------------------------------------------------------
+const board = DEFAULT_PHYSICAL_DIMENSIONS;
+const assemblyWidth1 = PART_MM.profileLong.w; // 630 mm
+const marginX1 = (board.physicalWidthMm - assemblyWidth1) / 2;
+
+const handleY = 20;
+const topProfileY = handleY + PART_MM.handle.h + 15; // handvat + kleine tussenruimte
+const middleProfileY = topProfileY + PART_MM.profileLong.h; // net onder het bovenste profiel
+const bottomProfileY = middleProfileY + PART_MM.profileShortThick.h; // net onder het middenprofiel
+
+const PRODUCT1_ZONE_DRAFTS: ZoneDraft[] = [
+  {
+    label: 'handle', expect: 'present', threshold: 0.08,
+    xMm: (board.physicalWidthMm - PART_MM.handle.w) / 2, yMm: handleY,
+    wMm: PART_MM.handle.w, hMm: PART_MM.handle.h,
+  },
+  {
+    label: 'profileTop630', expect: 'present', threshold: 0.08,
+    xMm: marginX1, yMm: topProfileY,
+    wMm: PART_MM.profileLong.w, hMm: PART_MM.profileLong.h,
+  },
+  {
+    label: 'profileMiddle370', expect: 'present', threshold: 0.08,
+    xMm: (board.physicalWidthMm - PART_MM.profileShortThick.w) / 2, yMm: middleProfileY,
+    wMm: PART_MM.profileShortThick.w, hMm: PART_MM.profileShortThick.h,
+  },
+  {
+    label: 'profileBottom630', expect: 'present', threshold: 0.08,
+    xMm: marginX1, yMm: bottomProfileY,
+    wMm: PART_MM.profileLong.w, hMm: PART_MM.profileLong.h,
+  },
+  {
+    label: 'wheelTopLeft', expect: 'present', threshold: 0.08,
+    xMm: marginX1, yMm: topProfileY + PART_MM.profileLong.h / 2 - PART_MM.wheel.h / 2,
+    wMm: PART_MM.wheel.w, hMm: PART_MM.wheel.h,
+  },
+  {
+    label: 'wheelTopRight', expect: 'present', threshold: 0.08,
+    xMm: marginX1 + assemblyWidth1 - PART_MM.wheel.w, yMm: topProfileY + PART_MM.profileLong.h / 2 - PART_MM.wheel.h / 2,
+    wMm: PART_MM.wheel.w, hMm: PART_MM.wheel.h,
+  },
+  {
+    label: 'wheelBottomLeft', expect: 'present', threshold: 0.08,
+    xMm: marginX1, yMm: bottomProfileY + PART_MM.profileLong.h / 2 - PART_MM.wheel.h / 2,
+    wMm: PART_MM.wheel.w, hMm: PART_MM.wheel.h,
+  },
+  {
+    label: 'wheelBottomRight', expect: 'present', threshold: 0.08,
+    xMm: marginX1 + assemblyWidth1 - PART_MM.wheel.w, yMm: bottomProfileY + PART_MM.profileLong.h / 2 - PART_MM.wheel.h / 2,
+    wMm: PART_MM.wheel.w, hMm: PART_MM.wheel.h,
+  },
+];
+
+// ------------------------------------------------------------------
+// PRODUCT 2 — GEEN referentieschema aangeleverd; onderstaande opbouw is
+// een consistente afleiding uit de eerder beschreven structuur (1×630 mm
+// profiel + 2×370 mm gewone profielen + 4 wielen, geen handvat) en
+// spiegelt Product 1's opbouw. Controleer dit zeker met een echte foto
+// van Product 2 en stel bij via het kalibratiescherm indien nodig — dit
+// is een inschatting, geen opgemeten schema zoals bij Product 1.
+// ------------------------------------------------------------------
+const assemblyWidth2 = PART_MM.profileShortThin.w; // 370 mm
+const marginX2 = (board.physicalWidthMm - assemblyWidth2) / 2;
+
+const topProfileY2 = 40;
+const middleProfileY2 = topProfileY2 + PART_MM.profileShortThin.h;
+const bottomProfileY2 = middleProfileY2 + PART_MM.profileLong.w; // het 630 mm profiel rechtop = zijn lengte (630) telt als hoogte
+
+const PRODUCT2_ZONE_DRAFTS: ZoneDraft[] = [
+  {
+    label: 'handleArea', expect: 'empty', threshold: 0.05, toleranceMm: 0,
+    xMm: (board.physicalWidthMm - PART_MM.handle.w) / 2, yMm: 0,
+    wMm: PART_MM.handle.w, hMm: topProfileY2 - 5,
+  },
+  {
+    label: 'profileTop370', expect: 'present', threshold: 0.08,
+    xMm: marginX2, yMm: topProfileY2,
+    wMm: PART_MM.profileShortThin.w, hMm: PART_MM.profileShortThin.h,
+  },
+  {
+    label: 'profileMiddle630', expect: 'present', threshold: 0.08,
+    xMm: (board.physicalWidthMm - PART_MM.profileLong.h) / 2, yMm: middleProfileY2,
+    wMm: PART_MM.profileLong.h, hMm: PART_MM.profileLong.w,
+  },
+  {
+    label: 'profileBottom370', expect: 'present', threshold: 0.08,
+    xMm: marginX2, yMm: bottomProfileY2,
+    wMm: PART_MM.profileShortThin.w, hMm: PART_MM.profileShortThin.h,
+  },
+  {
+    label: 'wheelTopLeft', expect: 'present', threshold: 0.08,
+    xMm: marginX2, yMm: topProfileY2 + PART_MM.profileShortThin.h / 2 - PART_MM.wheel.h / 2,
+    wMm: PART_MM.wheel.w, hMm: PART_MM.wheel.h,
+  },
+  {
+    label: 'wheelTopRight', expect: 'present', threshold: 0.08,
+    xMm: marginX2 + assemblyWidth2 - PART_MM.wheel.w, yMm: topProfileY2 + PART_MM.profileShortThin.h / 2 - PART_MM.wheel.h / 2,
+    wMm: PART_MM.wheel.w, hMm: PART_MM.wheel.h,
+  },
+  {
+    label: 'wheelBottomLeft', expect: 'present', threshold: 0.08,
+    xMm: marginX2, yMm: bottomProfileY2 + PART_MM.profileShortThin.h / 2 - PART_MM.wheel.h / 2,
+    wMm: PART_MM.wheel.w, hMm: PART_MM.wheel.h,
+  },
+  {
+    label: 'wheelBottomRight', expect: 'present', threshold: 0.08,
+    xMm: marginX2 + assemblyWidth2 - PART_MM.wheel.w, yMm: bottomProfileY2 + PART_MM.profileShortThin.h / 2 - PART_MM.wheel.h / 2,
+    wMm: PART_MM.wheel.w, hMm: PART_MM.wheel.h,
+  },
+];
 
 export const DEFAULT_PRODUCT_CONFIGS: Record<ProductId, ProductConfig> = {
   product1: {
     id: 'product1',
     name: 'Product 1',
-    description: 'H-shaped aluminium profile · 4 wheels · handle present',
-    zones: [
-      { x: 0.05, y: 0.05, w: 0.18, h: 0.18, label: 'wheelTopLeft', threshold: 0.08, expect: 'present' },
-      { x: 0.77, y: 0.05, w: 0.18, h: 0.18, label: 'wheelTopRight', threshold: 0.08, expect: 'present' },
-      { x: 0.05, y: 0.77, w: 0.18, h: 0.18, label: 'wheelBottomLeft', threshold: 0.08, expect: 'present' },
-      { x: 0.77, y: 0.77, w: 0.18, h: 0.18, label: 'wheelBottomRight', threshold: 0.08, expect: 'present' },
-      { x: 0.38, y: 0.04, w: 0.24, h: 0.18, label: 'handle', threshold: 0.08, expect: 'present' },
-      { x: 0.28, y: 0.30, w: 0.44, h: 0.40, label: 'profileCenter', threshold: 0.08, expect: 'present' },
-    ],
+    description: '2 × profiel 630×30 mm · 1 × profiel 370×60 mm (midden) · 4 wielen · handvat aanwezig',
+    zones: PRODUCT1_ZONE_DRAFTS.map((draft) => zoneFromMm(draft)),
   },
   product2: {
     id: 'product2',
     name: 'Product 2',
-    description: '1 × 630 mm profile · 2 × 370 mm profiles · 4 wheels · no handle',
-    zones: [
-      { x: 0.05, y: 0.05, w: 0.18, h: 0.18, label: 'wheelTopLeft', threshold: 0.08, expect: 'present' },
-      { x: 0.77, y: 0.05, w: 0.18, h: 0.18, label: 'wheelTopRight', threshold: 0.08, expect: 'present' },
-      { x: 0.05, y: 0.77, w: 0.18, h: 0.18, label: 'wheelBottomLeft', threshold: 0.08, expect: 'present' },
-      { x: 0.77, y: 0.77, w: 0.18, h: 0.18, label: 'wheelBottomRight', threshold: 0.08, expect: 'present' },
-      { x: 0.29, y: 0.20, w: 0.42, h: 0.16, label: 'profile630', threshold: 0.08, expect: 'present' },
-      { x: 0.29, y: 0.42, w: 0.42, h: 0.12, label: 'profile370A', threshold: 0.08, expect: 'present' },
-      { x: 0.29, y: 0.60, w: 0.42, h: 0.12, label: 'profile370B', threshold: 0.08, expect: 'present' },
-      { x: 0.38, y: 0.04, w: 0.24, h: 0.13, label: 'handleArea', threshold: 0.05, expect: 'empty' },
-    ],
+    description: '1 × profiel 630×30 mm (midden) · 2 × profiel 370×30 mm · 4 wielen · geen handvat',
+    zones: PRODUCT2_ZONE_DRAFTS.map((draft) => zoneFromMm(draft)),
   },
 };
 
@@ -89,10 +254,13 @@ export function loadProductConfigs(): Record<ProductId, ProductConfig> {
   const defaults = cloneDefaults();
   if (typeof window === 'undefined') return defaults;
   try {
-    const saved = JSON.parse(window.localStorage.getItem(CALIBRATION_STORAGE_KEY) ?? 'null') as Partial<Record<ProductId, ProductConfig>> | null;
+    const saved = JSON.parse(window.localStorage.getItem(CALIBRATION_STORAGE_KEY) ?? 'null') as (Partial<Record<ProductId, ProductConfig>> & {
+      products?: Partial<Record<ProductId, ProductConfig>>;
+    }) | null;
     if (!saved) return defaults;
+    const savedProducts = saved.products ?? saved;
     (Object.keys(defaults) as ProductId[]).forEach((productId) => {
-      const savedZones = saved[productId]?.zones;
+      const savedZones = savedProducts[productId]?.zones;
       if (!Array.isArray(savedZones)) return;
       defaults[productId].zones = defaults[productId].zones.map((zone, index) => {
         const candidate = savedZones[index];
@@ -113,13 +281,34 @@ export function loadProductConfigs(): Record<ProductId, ProductConfig> {
   }
 }
 
+export function loadPhysicalDimensions(): PhysicalDimensions {
+  if (typeof window === 'undefined') return { ...DEFAULT_PHYSICAL_DIMENSIONS };
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(CALIBRATION_STORAGE_KEY) ?? 'null') as
+      | { physicalDimensions?: Partial<PhysicalDimensions> }
+      | null;
+    const width = saved?.physicalDimensions?.physicalWidthMm;
+    const height = saved?.physicalDimensions?.physicalHeightMm;
+    return {
+      physicalWidthMm: typeof width === 'number' && Number.isFinite(width) && width > 0 ? width : DEFAULT_PHYSICAL_DIMENSIONS.physicalWidthMm,
+      physicalHeightMm: typeof height === 'number' && Number.isFinite(height) && height > 0 ? height : DEFAULT_PHYSICAL_DIMENSIONS.physicalHeightMm,
+    };
+  } catch {
+    return { ...DEFAULT_PHYSICAL_DIMENSIONS };
+  }
+}
+
 export function resetProductConfigs(): Record<ProductId, ProductConfig> {
   return cloneDefaults();
 }
 
-export function saveProductConfigs(configs: Record<ProductId, ProductConfig>) {
+export function resetPhysicalDimensions(): PhysicalDimensions {
+  return { ...DEFAULT_PHYSICAL_DIMENSIONS };
+}
+
+export function saveProductConfigs(configs: Record<ProductId, ProductConfig>, physicalDimensions: PhysicalDimensions) {
   if (typeof window !== 'undefined') {
-    window.localStorage.setItem(CALIBRATION_STORAGE_KEY, JSON.stringify(configs));
+    window.localStorage.setItem(CALIBRATION_STORAGE_KEY, JSON.stringify({ products: configs, physicalDimensions }));
   }
 }
 
@@ -158,32 +347,50 @@ function homographyFromFourPoints(from: Corner[], to: Corner[]): number[] | null
   return solution ? [...solution, 1] : null;
 }
 
-export function normalizeImage(source: ImageData, detections: Detection[], size = NORMALIZED_SIZE): ImageData | null {
-  const byId = new Map(detections.map((detection) => [detection.id, detection]));
-  const centerOf = (detection: Detection): Corner => detection.center ?? detection.corners.reduce(
+export function detectionCenter(detection: Detection): Corner {
+  return detection.center ?? detection.corners.reduce(
     (center, corner) => ({ x: center.x + corner.x / detection.corners.length, y: center.y + corner.y / detection.corners.length }),
     { x: 0, y: 0 },
   );
-  const sourcePoints = [0, 1, 3, 2].map((id) => byId.get(id)).filter((detection): detection is Detection => Boolean(detection)).map(centerOf);
+}
+
+export function distanceBetweenDetections(detections: Detection[], firstId: number, secondId: number): number | null {
+  const first = detections.find((detection) => detection.id === firstId);
+  const second = detections.find((detection) => detection.id === secondId);
+  if (!first || !second) return null;
+  const firstCenter = detectionCenter(first);
+  const secondCenter = detectionCenter(second);
+  return Math.hypot(secondCenter.x - firstCenter.x, secondCenter.y - firstCenter.y);
+}
+
+export function normalizeImage(
+  source: ImageData,
+  detections: Detection[],
+  dimensions: PhysicalDimensions = DEFAULT_PHYSICAL_DIMENSIONS,
+): ImageData | null {
+  const byId = new Map(detections.map((detection) => [detection.id, detection]));
+  const sourcePoints = [0, 1, 3, 2].map((id) => byId.get(id)).filter((detection): detection is Detection => Boolean(detection)).map(detectionCenter);
   if (sourcePoints.length !== 4) return null;
 
+  const width = Math.max(1, Math.round(dimensions.physicalWidthMm));
+  const height = Math.max(1, Math.round(dimensions.physicalHeightMm));
   const destinationPoints = [
     { x: 0, y: 0 },
-    { x: size - 1, y: 0 },
-    { x: size - 1, y: size - 1 },
-    { x: 0, y: size - 1 },
+    { x: width - 1, y: 0 },
+    { x: width - 1, y: height - 1 },
+    { x: 0, y: height - 1 },
   ];
   const mapping = homographyFromFourPoints(destinationPoints, sourcePoints);
   if (!mapping) return null;
 
-  const output = new ImageData(size, size);
+  const output = new ImageData(width, height);
   const outputPixels = output.data;
-  for (let y = 0; y < size; y += 1) {
-    for (let x = 0; x < size; x += 1) {
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
       const denominator = mapping[6] * x + mapping[7] * y + mapping[8];
       const sourceX = (mapping[0] * x + mapping[1] * y + mapping[2]) / denominator;
       const sourceY = (mapping[3] * x + mapping[4] * y + mapping[5]) / denominator;
-      const outputIndex = (y * size + x) * 4;
+      const outputIndex = (y * width + x) * 4;
       if (sourceX < 0 || sourceY < 0 || sourceX >= source.width || sourceY >= source.height) {
         outputPixels[outputIndex] = 235;
         outputPixels[outputIndex + 1] = 235;
@@ -246,8 +453,10 @@ function errorForZone(zone: ZoneResult): string {
   if (zone.pass) return '';
   if (zone.label === 'handleArea') return 'Onverwacht handvat gedetecteerd';
   if (zone.label === 'handle') return 'Handvat ontbreekt';
-  if (zone.label === 'profile630') return 'Profiel 630 mm niet gedetecteerd';
-  if (zone.label === 'profile370A' || zone.label === 'profile370B') return `${zone.label} profiel niet gedetecteerd`;
+  if (zone.label === 'profileTop630' || zone.label === 'profileBottom630') return 'Profiel 630×30 mm niet gedetecteerd';
+  if (zone.label === 'profileMiddle370') return 'Middenprofiel 370×60 mm niet gedetecteerd';
+  if (zone.label === 'profileMiddle630') return 'Middenprofiel 630×30 mm niet gedetecteerd';
+  if (zone.label === 'profileTop370' || zone.label === 'profileBottom370') return 'Profiel 370×30 mm niet gedetecteerd';
   if (zone.label.startsWith('wheel')) {
     const names: Record<string, string> = {
       wheelTopLeft: 'Wiel linksboven ontbreekt',
