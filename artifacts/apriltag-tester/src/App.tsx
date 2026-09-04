@@ -185,7 +185,19 @@ export default function App() {
       });
 
       streamRef.current = stream;
-      if (!videoRef.current) return;
+
+      // The camera panel is rendered already in the "opening" state.
+      // Wait one animation frame so <video ref={videoRef}> is definitely mounted.
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+      if (!videoRef.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
+        setCameraState('error');
+        setMessage('Cameraweergave kon niet worden opgebouwd. Probeer opnieuw.');
+        return;
+      }
+
       videoRef.current.srcObject = stream;
       await videoRef.current.play();
       setCameraState('ready');
@@ -425,7 +437,7 @@ export default function App() {
             })}
           </div>
 
-          {(cameraState === 'ready' || capture) && (
+          {(cameraState === 'opening' || cameraState === 'ready' || capture) && (
             <CameraPanel
               mode="reference" product={selectedProduct} cameraState={cameraState}
               capture={capture} busy={busy} detections={detections} foundIds={foundIds}
@@ -500,7 +512,7 @@ export default function App() {
           </button>
         )}
 
-        {(cameraState === 'ready' || capture) && (
+        {(cameraState === 'opening' || cameraState === 'ready' || capture) && (
           <CameraPanel
             mode="inspection" product={selectedProduct} cameraState={cameraState}
             capture={capture} busy={busy} detections={detections} foundIds={foundIds}
@@ -547,6 +559,14 @@ function CameraPanel({
       <div className="camera-stage">
         {!capture && <video ref={videoRef} autoPlay playsInline muted className={cameraState === 'ready' ? 'camera-video visible' : 'camera-video'} />}
         {capture && <img src={capture.url} className="camera-photo" alt="Genomen foto" />}
+
+        {cameraState === 'opening' && !capture && (
+          <div className="processing-overlay">
+            <LoaderCircle size={48} className="spin"/>
+            <strong>Camera openen…</strong>
+            <span>Even geduld</span>
+          </div>
+        )}
 
         {cameraState === 'ready' && !capture && <><div className="live-pill">● LIVE</div><div className="guide-frame"><span>ALLE 4 TAGS VOLLEDIG IN BEELD</span></div></>}
 
