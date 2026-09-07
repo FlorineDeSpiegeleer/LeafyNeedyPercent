@@ -51,8 +51,8 @@ export type OverlayInspectionResult = {
   overlayUrl: string;
 };
 
-export const NORMALIZED_WIDTH = 810;
-export const NORMALIZED_HEIGHT = 650;
+export const NORMALIZED_WIDTH = 790;
+export const NORMALIZED_HEIGHT = 690;
 
 /*
  * Algemene contourcontrole.
