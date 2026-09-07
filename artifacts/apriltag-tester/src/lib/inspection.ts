@@ -268,12 +268,12 @@ function blurredGray(image: ImageData): Float32Array {
   return blur;
 }
 
+
 function createEdgeMap(image: ImageData): Uint8Array {
   const { width, height } = image;
   const gray = blurredGray(image);
   const edges = new Uint8Array(width * height);
 
-  // Tuned to keep strong product contours and suppress subtle lighting gradients.
   const EDGE_THRESHOLD = 30;
 
   for (let y = 2; y < height - 2; y += 1) {
@@ -291,13 +291,9 @@ function createEdgeMap(image: ImageData): Uint8Array {
     }
   }
 
-  /**
-   * Ignore a thin outer border.
-   * The AprilTags themselves live at the corners and must not dominate
-   * the product contour score.
-   */
-  const marginX = Math.round(width * 0.035);
-  const marginY = Math.round(height * 0.035);
+  // Ignore only the very outer frame / AprilTag border.
+  const marginX = Math.round(width * 0.04);
+  const marginY = Math.round(height * 0.04);
 
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
@@ -346,8 +342,419 @@ function dilate(
 
 function countOnes(map: Uint8Array): number {
   let count = 0;
-  for (let i = 0; i < map.length; i += 1) count += map[i] ? 1 : 0;
+  for (let i = 0; i < map.length; i += 1) {
+    if (map[i]) count += 1;
+  }
   return count;
+}
+
+/**
+ * We do NOT use every edge to locate the product.
+ * Static edges from the table / AprilTags would otherwise keep the "pose"
+ * fixed even if the product is moved.
+ *
+ * Instead:
+ * 1. slightly dilate the edge map so broken profile edges connect;
+ * 2. find connected components;
+ * 3. keep the largest structural component that is not just a tiny marker.
+ *
+ * For these aluminium carts the connected profile frame is normally the
+ * largest structure in the central working area.
+ */
+function largestStructureMask(
+  edges: Uint8Array,
+  width: number,
+  height: number,
+): Uint8Array {
+  const connected = dilate(edges, width, height, 2);
+  const visited = new Uint8Array(connected.length);
+
+  let bestPixels: number[] = [];
+
+  const queueX = new Int32Array(width * height);
+  const queueY = new Int32Array(width * height);
+
+  const minXAllowed = Math.round(width * 0.05);
+  const minYAllowed = Math.round(height * 0.05);
+  const maxXAllowed = Math.round(width * 0.95);
+  const maxYAllowed = Math.round(height * 0.95);
+
+  for (let sy = minYAllowed; sy < maxYAllowed; sy += 1) {
+    for (let sx = minXAllowed; sx < maxXAllowed; sx += 1) {
+      const startIndex = sy * width + sx;
+      if (!connected[startIndex] || visited[startIndex]) continue;
+
+      let head = 0;
+      let tail = 0;
+      queueX[tail] = sx;
+      queueY[tail] = sy;
+      tail += 1;
+      visited[startIndex] = 1;
+
+      const pixels: number[] = [];
+
+      while (head < tail) {
+        const x = queueX[head];
+        const y = queueY[head];
+        head += 1;
+
+        pixels.push(y * width + x);
+
+        for (let oy = -1; oy <= 1; oy += 1) {
+          for (let ox = -1; ox <= 1; ox += 1) {
+            if (ox === 0 && oy === 0) continue;
+
+            const nx = x + ox;
+            const ny = y + oy;
+
+            if (
+              nx < minXAllowed ||
+              ny < minYAllowed ||
+              nx >= maxXAllowed ||
+              ny >= maxYAllowed
+            ) {
+              continue;
+            }
+
+            const ni = ny * width + nx;
+            if (!connected[ni] || visited[ni]) continue;
+
+            visited[ni] = 1;
+            queueX[tail] = nx;
+            queueY[tail] = ny;
+            tail += 1;
+          }
+        }
+      }
+
+      if (pixels.length > bestPixels.length) {
+        bestPixels = pixels;
+      }
+    }
+  }
+
+  const mask = new Uint8Array(edges.length);
+
+  // Use original (non-dilated) edge pixels that fall close to the largest component.
+  const bestDilated = new Uint8Array(edges.length);
+  for (const i of bestPixels) bestDilated[i] = 1;
+
+  const support = dilate(bestDilated, width, height, 4);
+
+  for (let i = 0; i < edges.length; i += 1) {
+    if (edges[i] && support[i]) mask[i] = 1;
+  }
+
+  // Fallback: if the detected structure is too small, use all central edges.
+  if (countOnes(mask) < 500) {
+    return edges.slice();
+  }
+
+  return mask;
+}
+
+type Pose = {
+  cx: number;
+  cy: number;
+  angle: number;
+};
+
+function estimatePose(mask: Uint8Array, width: number, height: number): Pose {
+  let count = 0;
+  let sumX = 0;
+  let sumY = 0;
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      if (!mask[y * width + x]) continue;
+      count += 1;
+      sumX += x;
+      sumY += y;
+    }
+  }
+
+  if (count === 0) {
+    return {
+      cx: width / 2,
+      cy: height / 2,
+      angle: 0,
+    };
+  }
+
+  const cx = sumX / count;
+  const cy = sumY / count;
+
+  let xx = 0;
+  let yy = 0;
+  let xy = 0;
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      if (!mask[y * width + x]) continue;
+
+      const dx = x - cx;
+      const dy = y - cy;
+
+      xx += dx * dx;
+      yy += dy * dy;
+      xy += dx * dy;
+    }
+  }
+
+  // Principal-axis orientation.
+  const angle = 0.5 * Math.atan2(2 * xy, xx - yy);
+
+  return { cx, cy, angle };
+}
+
+function transformEdgeMap(
+  source: Uint8Array,
+  width: number,
+  height: number,
+  sourcePose: Pose,
+  targetPose: Pose,
+  rotation: number,
+): Uint8Array {
+  const out = new Uint8Array(source.length);
+  const cos = Math.cos(rotation);
+  const sin = Math.sin(rotation);
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      if (!source[y * width + x]) continue;
+
+      const dx = x - sourcePose.cx;
+      const dy = y - sourcePose.cy;
+
+      const tx = targetPose.cx + cos * dx - sin * dy;
+      const ty = targetPose.cy + sin * dx + cos * dy;
+
+      const nx = Math.round(tx);
+      const ny = Math.round(ty);
+
+      if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+      out[ny * width + nx] = 1;
+    }
+  }
+
+  return out;
+}
+
+function transformImage(
+  source: ImageData,
+  sourcePose: Pose,
+  targetPose: Pose,
+  rotation: number,
+): ImageData {
+  const { width, height } = source;
+  const out = new ImageData(width, height);
+
+  // Neutral workshop background for pixels outside the rotated source.
+  for (let i = 0; i < out.data.length; i += 4) {
+    out.data[i] = 240;
+    out.data[i + 1] = 240;
+    out.data[i + 2] = 240;
+    out.data[i + 3] = 255;
+  }
+
+  // Inverse mapping: destination -> original source.
+  const cos = Math.cos(-rotation);
+  const sin = Math.sin(-rotation);
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const dx = x - targetPose.cx;
+      const dy = y - targetPose.cy;
+
+      const sx = sourcePose.cx + cos * dx - sin * dy;
+      const sy = sourcePose.cy + sin * dx + cos * dy;
+
+      if (
+        sx < 0 ||
+        sy < 0 ||
+        sx >= width - 1 ||
+        sy >= height - 1
+      ) {
+        continue;
+      }
+
+      const x0 = Math.floor(sx);
+      const y0 = Math.floor(sy);
+      const x1 = Math.min(width - 1, x0 + 1);
+      const y1 = Math.min(height - 1, y0 + 1);
+      const fx = sx - x0;
+      const fy = sy - y0;
+
+      const outIndex = (y * width + x) * 4;
+
+      for (let c = 0; c < 3; c += 1) {
+        const p00 = source.data[(y0 * width + x0) * 4 + c];
+        const p10 = source.data[(y0 * width + x1) * 4 + c];
+        const p01 = source.data[(y1 * width + x0) * 4 + c];
+        const p11 = source.data[(y1 * width + x1) * 4 + c];
+
+        const top = p00 * (1 - fx) + p10 * fx;
+        const bottom = p01 * (1 - fx) + p11 * fx;
+
+        out.data[outIndex + c] = Math.round(
+          top * (1 - fy) + bottom * fy,
+        );
+      }
+
+      out.data[outIndex + 3] = 255;
+    }
+  }
+
+  return out;
+}
+
+function softProximityScore(
+  sourceEdges: Uint8Array,
+  targetEdges: Uint8Array,
+  width: number,
+  height: number,
+  radius: number,
+): number {
+  const targetTolerance = dilate(targetEdges, width, height, radius);
+
+  let sourceCount = 0;
+  let matchCount = 0;
+
+  for (let i = 0; i < sourceEdges.length; i += 1) {
+    if (!sourceEdges[i]) continue;
+    sourceCount += 1;
+    if (targetTolerance[i]) matchCount += 1;
+  }
+
+  return sourceCount > 0 ? matchCount / sourceCount : 0;
+}
+
+function alignmentScore(
+  referenceEdges: Uint8Array,
+  alignedCurrentEdges: Uint8Array,
+  width: number,
+  height: number,
+): number {
+  const expected = softProximityScore(
+    referenceEdges,
+    alignedCurrentEdges,
+    width,
+    height,
+    CONTOUR_TOLERANCE_PX,
+  );
+
+  const placement = softProximityScore(
+    alignedCurrentEdges,
+    referenceEdges,
+    width,
+    height,
+    CONTOUR_TOLERANCE_PX,
+  );
+
+  return Math.min(expected, placement);
+}
+
+function autoAlignCurrentToReference(
+  current: ImageData,
+  reference: ImageData,
+): {
+  alignedImage: ImageData;
+  alignedEdges: Uint8Array;
+  referenceEdges: Uint8Array;
+} {
+  const width = NORMALIZED_WIDTH;
+  const height = NORMALIZED_HEIGHT;
+
+  const referenceEdges = createEdgeMap(reference);
+  const currentEdges = createEdgeMap(current);
+
+  const referenceStructure = largestStructureMask(
+    referenceEdges,
+    width,
+    height,
+  );
+
+  const currentStructure = largestStructureMask(
+    currentEdges,
+    width,
+    height,
+  );
+
+  const referencePose = estimatePose(
+    referenceStructure,
+    width,
+    height,
+  );
+
+  const currentPose = estimatePose(
+    currentStructure,
+    width,
+    height,
+  );
+
+  const baseRotation = referencePose.angle - currentPose.angle;
+
+  // PCA orientation has a 180° ambiguity.
+  // Try both and keep the alignment that matches the reference best.
+  const candidates = [
+    baseRotation,
+    baseRotation + Math.PI,
+  ];
+
+  let bestRotation = candidates[0];
+  let bestEdges = transformEdgeMap(
+    currentEdges,
+    width,
+    height,
+    currentPose,
+    referencePose,
+    bestRotation,
+  );
+  let bestScore = alignmentScore(
+    referenceEdges,
+    bestEdges,
+    width,
+    height,
+  );
+
+  for (let i = 1; i < candidates.length; i += 1) {
+    const rotation = candidates[i];
+
+    const transformed = transformEdgeMap(
+      currentEdges,
+      width,
+      height,
+      currentPose,
+      referencePose,
+      rotation,
+    );
+
+    const score = alignmentScore(
+      referenceEdges,
+      transformed,
+      width,
+      height,
+    );
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestRotation = rotation;
+      bestEdges = transformed;
+    }
+  }
+
+  const alignedImage = transformImage(
+    current,
+    currentPose,
+    referencePose,
+    bestRotation,
+  );
+
+  return {
+    alignedImage,
+    alignedEdges: bestEdges,
+    referenceEdges,
+  };
 }
 
 function createOverlayUrl(
@@ -371,25 +778,23 @@ function createOverlayUrl(
   for (let i = 0; i < referenceEdges.length; i += 1) {
     const p = i * 4;
 
-    /**
-     * GREEN = contour expected from the perfect reference and found nearby.
-     * YELLOW = expected reference contour is missing.
-     * RED = current contour exists outside the reference tolerance band.
-     */
-    if (referenceEdges[i]) {
-      if (dilatedCurrent[i]) {
-        overlay.data[p] = 34;
-        overlay.data[p + 1] = 197;
-        overlay.data[p + 2] = 94;
-        overlay.data[p + 3] = 230;
-      } else {
-        overlay.data[p] = 245;
-        overlay.data[p + 1] = 158;
-        overlay.data[p + 2] = 11;
-        overlay.data[p + 3] = 245;
-      }
+    // GREEN = reference contour correctly found nearby.
+    if (referenceEdges[i] && dilatedCurrent[i]) {
+      overlay.data[p] = 34;
+      overlay.data[p + 1] = 197;
+      overlay.data[p + 2] = 94;
+      overlay.data[p + 3] = 235;
     }
 
+    // YELLOW = contour expected from the perfect product but missing.
+    if (referenceEdges[i] && !dilatedCurrent[i]) {
+      overlay.data[p] = 245;
+      overlay.data[p + 1] = 158;
+      overlay.data[p + 2] = 11;
+      overlay.data[p + 3] = 245;
+    }
+
+    // RED = current contour exists where the perfect reference does not.
     if (currentEdges[i] && !dilatedReference[i]) {
       overlay.data[p] = 220;
       overlay.data[p + 1] = 38;
@@ -403,54 +808,10 @@ function createOverlayUrl(
   overlayCanvas.height = current.height;
   overlayCanvas.getContext("2d")?.putImageData(overlay, 0, 0);
 
-  ctx.globalAlpha = 0.9;
+  ctx.globalAlpha = 0.92;
   ctx.drawImage(overlayCanvas, 0, 0);
 
   return canvas.toDataURL("image/jpeg", 0.94);
-}
-
-
-function softProximityScore(
-  sourceEdges: Uint8Array,
-  targetEdges: Uint8Array,
-  width: number,
-  height: number,
-  radius: number,
-): number {
-  let sourceCount = 0;
-  let weightedMatch = 0;
-
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const i = y * width + x;
-      if (!sourceEdges[i]) continue;
-
-      sourceCount += 1;
-
-      let best = 0;
-
-      for (let oy = -radius; oy <= radius; oy += 1) {
-        for (let ox = -radius; ox <= radius; ox += 1) {
-          const distance = Math.sqrt(ox * ox + oy * oy);
-          if (distance > radius) continue;
-
-          const nx = x + ox;
-          const ny = y + oy;
-
-          if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
-          if (!targetEdges[ny * width + nx]) continue;
-
-          // Exact match = 1.0, edge at tolerance limit = small positive score.
-          const score = Math.max(0, 1 - distance / (radius + 1));
-          if (score > best) best = score;
-        }
-      }
-
-      weightedMatch += best;
-    }
-  }
-
-  return sourceCount > 0 ? weightedMatch / sourceCount : 0;
 }
 
 export function inspectAgainstReference(
@@ -461,8 +822,19 @@ export function inspectAgainstReference(
   const width = NORMALIZED_WIDTH;
   const height = NORMALIZED_HEIGHT;
 
-  const referenceEdges = createEdgeMap(reference);
-  const currentEdges = createEdgeMap(current);
+  /**
+   * IMPORTANT:
+   * Before comparison, the WHOLE current product is translated + rotated
+   * onto the reference product. Therefore a correct product may lie
+   * anywhere inside the AprilTag frame.
+   *
+   * Only internal / relative geometry remains relevant afterwards.
+   */
+  const {
+    alignedImage,
+    alignedEdges: currentEdges,
+    referenceEdges,
+  } = autoAlignCurrentToReference(current, reference);
 
   const dilatedReference = dilate(
     referenceEdges,
@@ -489,41 +861,16 @@ export function inspectAgainstReference(
     if (currentEdges[i] && dilatedReference[i]) currentMatched += 1;
   }
 
-  const expectedBinary =
-    referenceEdgePixels > 0 ? referenceMatched / referenceEdgePixels : 0;
+  const expectedContourFound =
+    referenceEdgePixels > 0
+      ? referenceMatched / referenceEdgePixels
+      : 0;
 
-  const placementBinary =
-    currentEdgePixels > 0 ? currentMatched / currentEdgePixels : 0;
+  const currentContourInsideTolerance =
+    currentEdgePixels > 0
+      ? currentMatched / currentEdgePixels
+      : 0;
 
-  // Soft proximity is less sensitive to tiny homography shifts, camera height,
-  // aluminium reflections and small differences in AprilTag corner detection.
-  const expectedSoft = softProximityScore(
-    referenceEdges,
-    currentEdges,
-    width,
-    height,
-    CONTOUR_TOLERANCE_PX,
-  );
-
-  const placementSoft = softProximityScore(
-    currentEdges,
-    referenceEdges,
-    width,
-    height,
-    CONTOUR_TOLERANCE_PX,
-  );
-
-  // Binary overlap remains important, but the soft score makes the system
-  // much more robust in real workshop conditions.
-  const expectedContourFound = expectedBinary * 0.55 + expectedSoft * 0.45;
-  const currentContourInsideTolerance = placementBinary * 0.55 + placementSoft * 0.45;
-
-  /**
-   * Both conditions must pass.
-   * This catches:
-   * - missing components: reference contour is not found;
-   * - misplaced / extra components: current contour leaves the allowed band.
-   */
   const score = Math.min(
     expectedContourFound,
     currentContourInsideTolerance,
@@ -546,7 +893,7 @@ export function inspectAgainstReference(
     expectedThreshold: EXPECTED_CONTOUR_THRESHOLD,
     placementThreshold: PLACEMENT_CONTOUR_THRESHOLD,
     overlayUrl: createOverlayUrl(
-      current,
+      alignedImage,
       referenceEdges,
       currentEdges,
       dilatedReference,
@@ -565,7 +912,10 @@ export function saveReference(
     createdAt: Date.now(),
   };
 
-  localStorage.setItem(REFERENCE_KEYS[product], JSON.stringify(value));
+  localStorage.setItem(
+    REFERENCE_KEYS[product],
+    JSON.stringify(value),
+  );
 }
 
 export function loadReference(product: ProductId): StoredReference | null {
@@ -575,7 +925,10 @@ export function loadReference(product: ProductId): StoredReference | null {
 
     const parsed = JSON.parse(raw) as StoredReference;
 
-    if (!parsed.imageUrl || parsed.product !== product) return null;
+    if (!parsed.imageUrl || parsed.product !== product) {
+      return null;
+    }
+
     return parsed;
   } catch {
     return null;
