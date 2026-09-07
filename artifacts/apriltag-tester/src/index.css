@@ -495,3 +495,27 @@ button:disabled { opacity: .46; cursor: not-allowed !important; }
     min-height: 280px;
   }
 }
+
+
+/* Embedded in DigitalWorkstation */
+.app-shell.embedded {
+  min-height: 100%;
+  background: #f8fafc;
+}
+
+.embedded-main {
+  width: min(100%, 1080px);
+  margin: 0 auto;
+  padding: 12px;
+}
+
+.embedded-main .camera-open {
+  margin-top: 0;
+}
+
+@media (max-width: 720px) {
+  .embedded-main {
+    width: 100%;
+    padding: 9px;
+  }
+}
