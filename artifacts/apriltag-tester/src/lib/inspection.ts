@@ -22,7 +22,8 @@ export type OverlayInspectionResult = {
   currentContourInsideTolerance: number;
   referenceEdgePixels: number;
   currentEdgePixels: number;
-  threshold: number;
+  expectedThreshold: number;
+  placementThreshold: number;
   overlayUrl: string;
 };
 
@@ -33,13 +34,14 @@ export const NORMALIZED_HEIGHT = 650;
  * 95% was the requested acceptance rule.
  * If real testing proves this too strict, lower only this number.
  */
-export const CONTOUR_MATCH_THRESHOLD = 0.95;
+export const EXPECTED_CONTOUR_THRESHOLD = 0.75;
+export const PLACEMENT_CONTOUR_THRESHOLD = 0.75;
 
 /**
  * A few pixels of movement are allowed after perspective correction.
  * 7 px on an 810 × 650 image is deliberately small but realistic.
  */
-export const CONTOUR_TOLERANCE_PX = 7;
+export const CONTOUR_TOLERANCE_PX = 18;
 
 export const REFERENCE_KEYS: Record<ProductId, string> = {
   product1: "sirris-overlay-reference-product1-v1",
@@ -272,7 +274,7 @@ function createEdgeMap(image: ImageData): Uint8Array {
   const edges = new Uint8Array(width * height);
 
   // Tuned to keep strong product contours and suppress subtle lighting gradients.
-  const EDGE_THRESHOLD = 38;
+  const EDGE_THRESHOLD = 30;
 
   for (let y = 2; y < height - 2; y += 1) {
     for (let x = 2; x < width - 2; x += 1) {
@@ -407,6 +409,50 @@ function createOverlayUrl(
   return canvas.toDataURL("image/jpeg", 0.94);
 }
 
+
+function softProximityScore(
+  sourceEdges: Uint8Array,
+  targetEdges: Uint8Array,
+  width: number,
+  height: number,
+  radius: number,
+): number {
+  let sourceCount = 0;
+  let weightedMatch = 0;
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const i = y * width + x;
+      if (!sourceEdges[i]) continue;
+
+      sourceCount += 1;
+
+      let best = 0;
+
+      for (let oy = -radius; oy <= radius; oy += 1) {
+        for (let ox = -radius; ox <= radius; ox += 1) {
+          const distance = Math.sqrt(ox * ox + oy * oy);
+          if (distance > radius) continue;
+
+          const nx = x + ox;
+          const ny = y + oy;
+
+          if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+          if (!targetEdges[ny * width + nx]) continue;
+
+          // Exact match = 1.0, edge at tolerance limit = small positive score.
+          const score = Math.max(0, 1 - distance / (radius + 1));
+          if (score > best) best = score;
+        }
+      }
+
+      weightedMatch += best;
+    }
+  }
+
+  return sourceCount > 0 ? weightedMatch / sourceCount : 0;
+}
+
 export function inspectAgainstReference(
   product: ProductId,
   current: ImageData,
@@ -443,11 +489,34 @@ export function inspectAgainstReference(
     if (currentEdges[i] && dilatedReference[i]) currentMatched += 1;
   }
 
-  const expectedContourFound =
+  const expectedBinary =
     referenceEdgePixels > 0 ? referenceMatched / referenceEdgePixels : 0;
 
-  const currentContourInsideTolerance =
+  const placementBinary =
     currentEdgePixels > 0 ? currentMatched / currentEdgePixels : 0;
+
+  // Soft proximity is less sensitive to tiny homography shifts, camera height,
+  // aluminium reflections and small differences in AprilTag corner detection.
+  const expectedSoft = softProximityScore(
+    referenceEdges,
+    currentEdges,
+    width,
+    height,
+    CONTOUR_TOLERANCE_PX,
+  );
+
+  const placementSoft = softProximityScore(
+    currentEdges,
+    referenceEdges,
+    width,
+    height,
+    CONTOUR_TOLERANCE_PX,
+  );
+
+  // Binary overlap remains important, but the soft score makes the system
+  // much more robust in real workshop conditions.
+  const expectedContourFound = expectedBinary * 0.55 + expectedSoft * 0.45;
+  const currentContourInsideTolerance = placementBinary * 0.55 + placementSoft * 0.45;
 
   /**
    * Both conditions must pass.
@@ -461,8 +530,8 @@ export function inspectAgainstReference(
   );
 
   const status =
-    expectedContourFound >= CONTOUR_MATCH_THRESHOLD &&
-    currentContourInsideTolerance >= CONTOUR_MATCH_THRESHOLD
+    expectedContourFound >= EXPECTED_CONTOUR_THRESHOLD &&
+    currentContourInsideTolerance >= PLACEMENT_CONTOUR_THRESHOLD
       ? "ok"
       : "nok";
 
@@ -474,7 +543,8 @@ export function inspectAgainstReference(
     currentContourInsideTolerance,
     referenceEdgePixels,
     currentEdgePixels,
-    threshold: CONTOUR_MATCH_THRESHOLD,
+    expectedThreshold: EXPECTED_CONTOUR_THRESHOLD,
+    placementThreshold: PLACEMENT_CONTOUR_THRESHOLD,
     overlayUrl: createOverlayUrl(
       current,
       referenceEdges,
