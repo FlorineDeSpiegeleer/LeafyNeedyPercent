@@ -2069,7 +2069,7 @@ function createWheelRegions(
 
   const regionWidth =
     Math.max(
-      75,
+      55,
 
       box.width *
         0.32,
@@ -2077,7 +2077,7 @@ function createWheelRegions(
 
   const regionHeight =
     Math.max(
-      75,
+      55,
 
       box.height *
         0.32,
