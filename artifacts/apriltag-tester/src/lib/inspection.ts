@@ -1,280 +1,31 @@
-export type Point = { x: number; y: number };
+from pathlib import Path
+import zipfile, shutil, re
 
-export type Detection = {
-  id: number;
-  corners: Point[];
-  center?: Point;
-};
+# Use previous auto-align version as base so only inspection.ts changes again.
+src_zip = Path("/mnt/data/AprilTag_AutoAlign_Fix.zip")
+work = Path("/mnt/data/AprilTag_AutoAlign_MaskSearch")
+if work.exists():
+    shutil.rmtree(work)
+work.mkdir(parents=True)
 
-export type ProductId = "product1" | "product2";
+with zipfile.ZipFile(src_zip) as z:
+    z.extractall(work)
 
-export type StoredReference = {
-  product: ProductId;
-  imageUrl: string;
-  createdAt: number;
-};
+inspection_path = next(work.rglob("src/lib/inspection.ts"))
+text = inspection_path.read_text(encoding="utf-8")
 
-export type OverlayInspectionResult = {
-  status: "ok" | "nok";
-  product: ProductId;
-  score: number;
-  expectedContourFound: number;
-  currentContourInsideTolerance: number;
-  referenceEdgePixels: number;
-  currentEdgePixels: number;
-  expectedThreshold: number;
-  placementThreshold: number;
-  overlayUrl: string;
-};
+# We'll replace everything from createEdgeMap onward with a more robust
+# mask + angle/translation search registration.
+marker = "function createEdgeMap(image: ImageData): Uint8Array {"
+prefix = text[:text.index(marker)]
 
-export const NORMALIZED_WIDTH = 810;
-export const NORMALIZED_HEIGHT = 650;
-
-/**
- * 95% was the requested acceptance rule.
- * If real testing proves this too strict, lower only this number.
- */
-export const EXPECTED_CONTOUR_THRESHOLD = 0.75;
-export const PLACEMENT_CONTOUR_THRESHOLD = 0.75;
-
-/**
- * A few pixels of movement are allowed after perspective correction.
- * 7 px on an 810 × 650 image is deliberately small but realistic.
- */
-export const CONTOUR_TOLERANCE_PX = 18;
-
-export const REFERENCE_KEYS: Record<ProductId, string> = {
-  product1: "sirris-overlay-reference-product1-v1",
-  product2: "sirris-overlay-reference-product2-v1",
-};
-
-function centerOf(detection: Detection): Point {
-  if (detection.center) return detection.center;
-
-  return detection.corners.reduce(
-    (sum, p) => ({
-      x: sum.x + p.x / detection.corners.length,
-      y: sum.y + p.y / detection.corners.length,
-    }),
-    { x: 0, y: 0 },
-  );
-}
-
-function solveLinearSystem(matrix: number[][], values: number[]): number[] | null {
-  const n = values.length;
-  const a = matrix.map((row, i) => [...row, values[i]]);
-
-  for (let col = 0; col < n; col += 1) {
-    let pivot = col;
-
-    for (let row = col + 1; row < n; row += 1) {
-      if (Math.abs(a[row][col]) > Math.abs(a[pivot][col])) pivot = row;
-    }
-
-    if (Math.abs(a[pivot][col]) < 1e-10) return null;
-
-    [a[col], a[pivot]] = [a[pivot], a[col]];
-
-    const divisor = a[col][col];
-    for (let j = col; j <= n; j += 1) a[col][j] /= divisor;
-
-    for (let row = 0; row < n; row += 1) {
-      if (row === col) continue;
-      const factor = a[row][col];
-      for (let j = col; j <= n; j += 1) {
-        a[row][j] -= factor * a[col][j];
-      }
-    }
-  }
-
-  return a.map((row) => row[n]);
-}
-
-function homographyFromFourPoints(from: Point[], to: Point[]): number[] | null {
-  const matrix: number[][] = [];
-  const values: number[] = [];
-
-  from.forEach((p, i) => {
-    const q = to[i];
-
-    matrix.push([
-      p.x, p.y, 1,
-      0, 0, 0,
-      -q.x * p.x, -q.x * p.y,
-    ]);
-    values.push(q.x);
-
-    matrix.push([
-      0, 0, 0,
-      p.x, p.y, 1,
-      -q.y * p.x, -q.y * p.y,
-    ]);
-    values.push(q.y);
-  });
-
-  const h = solveLinearSystem(matrix, values);
-  return h ? [...h, 1] : null;
-}
-
-/**
- * AprilTag layout:
- * ID 0 = top-left
- * ID 1 = top-right
- * ID 2 = bottom-left
- * ID 3 = bottom-right
- *
- * The tag CENTRES define the physical 810 × 650 reference rectangle.
- */
-export function normalizeImage(
-  source: ImageData,
-  detections: Detection[],
-): ImageData | null {
-  const byId = new Map(detections.map((d) => [d.id, d]));
-
-  const sourcePoints = [0, 1, 3, 2]
-    .map((id) => byId.get(id))
-    .filter((d): d is Detection => Boolean(d))
-    .map(centerOf);
-
-  if (sourcePoints.length !== 4) return null;
-
-  const destinationPoints: Point[] = [
-    { x: 0, y: 0 },
-    { x: NORMALIZED_WIDTH - 1, y: 0 },
-    { x: NORMALIZED_WIDTH - 1, y: NORMALIZED_HEIGHT - 1 },
-    { x: 0, y: NORMALIZED_HEIGHT - 1 },
-  ];
-
-  // destination -> source, so we can sample every output pixel.
-  const h = homographyFromFourPoints(destinationPoints, sourcePoints);
-  if (!h) return null;
-
-  const output = new ImageData(NORMALIZED_WIDTH, NORMALIZED_HEIGHT);
-
-  for (let y = 0; y < NORMALIZED_HEIGHT; y += 1) {
-    for (let x = 0; x < NORMALIZED_WIDTH; x += 1) {
-      const denominator = h[6] * x + h[7] * y + h[8];
-      const sx = (h[0] * x + h[1] * y + h[2]) / denominator;
-      const sy = (h[3] * x + h[4] * y + h[5]) / denominator;
-      const out = (y * NORMALIZED_WIDTH + x) * 4;
-
-      if (
-        !Number.isFinite(sx) ||
-        !Number.isFinite(sy) ||
-        sx < 0 ||
-        sy < 0 ||
-        sx >= source.width - 1 ||
-        sy >= source.height - 1
-      ) {
-        output.data[out] = 240;
-        output.data[out + 1] = 240;
-        output.data[out + 2] = 240;
-        output.data[out + 3] = 255;
-        continue;
-      }
-
-      const x0 = Math.floor(sx);
-      const y0 = Math.floor(sy);
-      const x1 = Math.min(source.width - 1, x0 + 1);
-      const y1 = Math.min(source.height - 1, y0 + 1);
-      const dx = sx - x0;
-      const dy = sy - y0;
-
-      for (let c = 0; c < 3; c += 1) {
-        const p00 = source.data[(y0 * source.width + x0) * 4 + c];
-        const p10 = source.data[(y0 * source.width + x1) * 4 + c];
-        const p01 = source.data[(y1 * source.width + x0) * 4 + c];
-        const p11 = source.data[(y1 * source.width + x1) * 4 + c];
-
-        const top = p00 * (1 - dx) + p10 * dx;
-        const bottom = p01 * (1 - dx) + p11 * dx;
-        output.data[out + c] = Math.round(top * (1 - dy) + bottom * dy);
-      }
-
-      output.data[out + 3] = 255;
-    }
-  }
-
-  return output;
-}
-
-export function imageDataToUrl(imageData: ImageData, quality = 0.94): string {
-  const canvas = document.createElement("canvas");
-  canvas.width = imageData.width;
-  canvas.height = imageData.height;
-
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("Canvas unavailable");
-
-  ctx.putImageData(imageData, 0, 0);
-  return canvas.toDataURL("image/jpeg", quality);
-}
-
-export async function imageUrlToImageData(url: string): Promise<ImageData> {
-  const image = new Image();
-
-  await new Promise<void>((resolve, reject) => {
-    image.onload = () => resolve();
-    image.onerror = () => reject(new Error("Reference image could not be loaded."));
-    image.src = url;
-  });
-
-  const canvas = document.createElement("canvas");
-  canvas.width = NORMALIZED_WIDTH;
-  canvas.height = NORMALIZED_HEIGHT;
-
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("Canvas unavailable");
-
-  ctx.drawImage(image, 0, 0, NORMALIZED_WIDTH, NORMALIZED_HEIGHT);
-  return ctx.getImageData(0, 0, NORMALIZED_WIDTH, NORMALIZED_HEIGHT);
-}
-
-function luminance(image: ImageData, x: number, y: number): number {
-  const i = (y * image.width + x) * 4;
-  return (
-    image.data[i] * 0.299 +
-    image.data[i + 1] * 0.587 +
-    image.data[i + 2] * 0.114
-  );
-}
-
-function blurredGray(image: ImageData): Float32Array {
-  const { width, height } = image;
-  const gray = new Float32Array(width * height);
-  const blur = new Float32Array(width * height);
-
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      gray[y * width + x] = luminance(image, x, y);
-    }
-  }
-
-  // 3 × 3 mean blur reduces sensor noise and tiny reflections.
-  for (let y = 1; y < height - 1; y += 1) {
-    for (let x = 1; x < width - 1; x += 1) {
-      let sum = 0;
-
-      for (let oy = -1; oy <= 1; oy += 1) {
-        for (let ox = -1; ox <= 1; ox += 1) {
-          sum += gray[(y + oy) * width + (x + ox)];
-        }
-      }
-
-      blur[y * width + x] = sum / 9;
-    }
-  }
-
-  return blur;
-}
-
-
+tail = r'''
 function createEdgeMap(image: ImageData): Uint8Array {
   const { width, height } = image;
   const gray = blurredGray(image);
   const edges = new Uint8Array(width * height);
 
-  const EDGE_THRESHOLD = 30;
+  const EDGE_THRESHOLD = 28;
 
   for (let y = 2; y < height - 2; y += 1) {
     for (let x = 2; x < width - 2; x += 1) {
@@ -291,9 +42,8 @@ function createEdgeMap(image: ImageData): Uint8Array {
     }
   }
 
-  // Ignore only the very outer frame / AprilTag border.
-  const marginX = Math.round(width * 0.04);
-  const marginY = Math.round(height * 0.04);
+  const marginX = Math.round(width * 0.045);
+  const marginY = Math.round(height * 0.045);
 
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
@@ -340,6 +90,50 @@ function dilate(
   return out;
 }
 
+function erode(
+  source: Uint8Array,
+  width: number,
+  height: number,
+  radius: number,
+): Uint8Array {
+  const out = new Uint8Array(source.length);
+
+  for (let y = radius; y < height - radius; y += 1) {
+    for (let x = radius; x < width - radius; x += 1) {
+      let keep = true;
+
+      for (let oy = -radius; oy <= radius && keep; oy += 1) {
+        for (let ox = -radius; ox <= radius; ox += 1) {
+          if (ox * ox + oy * oy > radius * radius) continue;
+
+          if (!source[(y + oy) * width + (x + ox)]) {
+            keep = false;
+            break;
+          }
+        }
+      }
+
+      if (keep) out[y * width + x] = 1;
+    }
+  }
+
+  return out;
+}
+
+function closeMask(
+  source: Uint8Array,
+  width: number,
+  height: number,
+  radius: number,
+): Uint8Array {
+  return erode(
+    dilate(source, width, height, radius),
+    width,
+    height,
+    radius,
+  );
+}
+
 function countOnes(map: Uint8Array): number {
   let count = 0;
   for (let i = 0; i < map.length; i += 1) {
@@ -348,54 +142,91 @@ function countOnes(map: Uint8Array): number {
   return count;
 }
 
+function rgbAt(image: ImageData, x: number, y: number) {
+  const i = (y * image.width + x) * 4;
+  return {
+    r: image.data[i],
+    g: image.data[i + 1],
+    b: image.data[i + 2],
+  };
+}
+
 /**
- * We do NOT use every edge to locate the product.
- * Static edges from the table / AprilTags would otherwise keep the "pose"
- * fixed even if the product is moved.
+ * Product mask for this specific demo:
+ * - aluminium tends to be brighter / lower saturation
+ * - wheels / handle tend to be dark
  *
- * Instead:
- * 1. slightly dilate the edge map so broken profile edges connect;
- * 2. find connected components;
- * 3. keep the largest structural component that is not just a tiny marker.
- *
- * For these aluminium carts the connected profile frame is normally the
- * largest structure in the central working area.
+ * We intentionally ignore middle-grey floor/background as much as possible.
+ * This is only used for GLOBAL product registration. Final acceptance is still
+ * based on contour comparison, not on this crude mask.
  */
-function largestStructureMask(
-  edges: Uint8Array,
+function createProductMask(image: ImageData): Uint8Array {
+  const { width, height } = image;
+  const mask = new Uint8Array(width * height);
+
+  const minX = Math.round(width * 0.05);
+  const maxX = Math.round(width * 0.95);
+  const minY = Math.round(height * 0.05);
+  const maxY = Math.round(height * 0.95);
+
+  for (let y = minY; y < maxY; y += 1) {
+    for (let x = minX; x < maxX; x += 1) {
+      const { r, g, b } = rgbAt(image, x, y);
+
+      const maxC = Math.max(r, g, b);
+      const minC = Math.min(r, g, b);
+      const saturation = maxC - minC;
+      const brightness = (r + g + b) / 3;
+
+      const brightAluminium =
+        brightness >= 150 &&
+        saturation <= 70;
+
+      const darkComponent =
+        brightness <= 75;
+
+      if (brightAluminium || darkComponent) {
+        mask[y * width + x] = 1;
+      }
+    }
+  }
+
+  // Connect nearby pieces of the same cart and remove isolated noise.
+  let cleaned = closeMask(mask, width, height, 3);
+  cleaned = dilate(cleaned, width, height, 2);
+
+  return largestConnectedComponent(cleaned, width, height);
+}
+
+function largestConnectedComponent(
+  source: Uint8Array,
   width: number,
   height: number,
 ): Uint8Array {
-  const connected = dilate(edges, width, height, 2);
-  const visited = new Uint8Array(connected.length);
+  const visited = new Uint8Array(source.length);
+  let best: number[] = [];
 
-  let bestPixels: number[] = [];
+  const qx = new Int32Array(width * height);
+  const qy = new Int32Array(width * height);
 
-  const queueX = new Int32Array(width * height);
-  const queueY = new Int32Array(width * height);
-
-  const minXAllowed = Math.round(width * 0.05);
-  const minYAllowed = Math.round(height * 0.05);
-  const maxXAllowed = Math.round(width * 0.95);
-  const maxYAllowed = Math.round(height * 0.95);
-
-  for (let sy = minYAllowed; sy < maxYAllowed; sy += 1) {
-    for (let sx = minXAllowed; sx < maxXAllowed; sx += 1) {
-      const startIndex = sy * width + sx;
-      if (!connected[startIndex] || visited[startIndex]) continue;
+  for (let sy = 0; sy < height; sy += 1) {
+    for (let sx = 0; sx < width; sx += 1) {
+      const si = sy * width + sx;
+      if (!source[si] || visited[si]) continue;
 
       let head = 0;
       let tail = 0;
-      queueX[tail] = sx;
-      queueY[tail] = sy;
+
+      qx[tail] = sx;
+      qy[tail] = sy;
       tail += 1;
-      visited[startIndex] = 1;
+      visited[si] = 1;
 
       const pixels: number[] = [];
 
       while (head < tail) {
-        const x = queueX[head];
-        const y = queueY[head];
+        const x = qx[head];
+        const y = qy[head];
         head += 1;
 
         pixels.push(y * width + x);
@@ -407,50 +238,27 @@ function largestStructureMask(
             const nx = x + ox;
             const ny = y + oy;
 
-            if (
-              nx < minXAllowed ||
-              ny < minYAllowed ||
-              nx >= maxXAllowed ||
-              ny >= maxYAllowed
-            ) {
-              continue;
-            }
+            if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
 
             const ni = ny * width + nx;
-            if (!connected[ni] || visited[ni]) continue;
+            if (!source[ni] || visited[ni]) continue;
 
             visited[ni] = 1;
-            queueX[tail] = nx;
-            queueY[tail] = ny;
+            qx[tail] = nx;
+            qy[tail] = ny;
             tail += 1;
           }
         }
       }
 
-      if (pixels.length > bestPixels.length) {
-        bestPixels = pixels;
-      }
+      if (pixels.length > best.length) best = pixels;
     }
   }
 
-  const mask = new Uint8Array(edges.length);
+  const out = new Uint8Array(source.length);
+  for (const i of best) out[i] = 1;
 
-  // Use original (non-dilated) edge pixels that fall close to the largest component.
-  const bestDilated = new Uint8Array(edges.length);
-  for (const i of bestPixels) bestDilated[i] = 1;
-
-  const support = dilate(bestDilated, width, height, 4);
-
-  for (let i = 0; i < edges.length; i += 1) {
-    if (edges[i] && support[i]) mask[i] = 1;
-  }
-
-  // Fallback: if the detected structure is too small, use all central edges.
-  if (countOnes(mask) < 500) {
-    return edges.slice();
-  }
-
-  return mask;
+  return out;
 }
 
 type Pose = {
@@ -473,12 +281,8 @@ function estimatePose(mask: Uint8Array, width: number, height: number): Pose {
     }
   }
 
-  if (count === 0) {
-    return {
-      cx: width / 2,
-      cy: height / 2,
-      angle: 0,
-    };
+  if (count < 100) {
+    return { cx: width / 2, cy: height / 2, angle: 0 };
   }
 
   const cx = sumX / count;
@@ -501,13 +305,31 @@ function estimatePose(mask: Uint8Array, width: number, height: number): Pose {
     }
   }
 
-  // Principal-axis orientation.
   const angle = 0.5 * Math.atan2(2 * xy, xx - yy);
 
   return { cx, cy, angle };
 }
 
-function transformEdgeMap(
+function transformPoint(
+  x: number,
+  y: number,
+  sourcePose: Pose,
+  targetPose: Pose,
+  rotation: number,
+) {
+  const dx = x - sourcePose.cx;
+  const dy = y - sourcePose.cy;
+
+  const cos = Math.cos(rotation);
+  const sin = Math.sin(rotation);
+
+  return {
+    x: targetPose.cx + cos * dx - sin * dy,
+    y: targetPose.cy + sin * dx + cos * dy,
+  };
+}
+
+function transformBinaryMap(
   source: Uint8Array,
   width: number,
   height: number,
@@ -516,21 +338,21 @@ function transformEdgeMap(
   rotation: number,
 ): Uint8Array {
   const out = new Uint8Array(source.length);
-  const cos = Math.cos(rotation);
-  const sin = Math.sin(rotation);
 
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
       if (!source[y * width + x]) continue;
 
-      const dx = x - sourcePose.cx;
-      const dy = y - sourcePose.cy;
+      const p = transformPoint(
+        x,
+        y,
+        sourcePose,
+        targetPose,
+        rotation,
+      );
 
-      const tx = targetPose.cx + cos * dx - sin * dy;
-      const ty = targetPose.cy + sin * dx + cos * dy;
-
-      const nx = Math.round(tx);
-      const ny = Math.round(ty);
+      const nx = Math.round(p.x);
+      const ny = Math.round(p.y);
 
       if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
       out[ny * width + nx] = 1;
@@ -549,17 +371,16 @@ function transformImage(
   const { width, height } = source;
   const out = new ImageData(width, height);
 
-  // Neutral workshop background for pixels outside the rotated source.
   for (let i = 0; i < out.data.length; i += 4) {
-    out.data[i] = 240;
-    out.data[i + 1] = 240;
-    out.data[i + 2] = 240;
+    out.data[i] = 238;
+    out.data[i + 1] = 238;
+    out.data[i + 2] = 238;
     out.data[i + 3] = 255;
   }
 
-  // Inverse mapping: destination -> original source.
-  const cos = Math.cos(-rotation);
-  const sin = Math.sin(-rotation);
+  const invRotation = -rotation;
+  const cos = Math.cos(invRotation);
+  const sin = Math.sin(invRotation);
 
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
@@ -582,10 +403,11 @@ function transformImage(
       const y0 = Math.floor(sy);
       const x1 = Math.min(width - 1, x0 + 1);
       const y1 = Math.min(height - 1, y0 + 1);
+
       const fx = sx - x0;
       const fy = sy - y0;
 
-      const outIndex = (y * width + x) * 4;
+      const oi = (y * width + x) * 4;
 
       for (let c = 0; c < 3; c += 1) {
         const p00 = source.data[(y0 * width + x0) * 4 + c];
@@ -596,164 +418,134 @@ function transformImage(
         const top = p00 * (1 - fx) + p10 * fx;
         const bottom = p01 * (1 - fx) + p11 * fx;
 
-        out.data[outIndex + c] = Math.round(
+        out.data[oi + c] = Math.round(
           top * (1 - fy) + bottom * fy,
         );
       }
 
-      out.data[outIndex + 3] = 255;
+      out.data[oi + 3] = 255;
     }
   }
 
   return out;
 }
 
-function softProximityScore(
-  sourceEdges: Uint8Array,
-  targetEdges: Uint8Array,
+function overlapScore(
+  a: Uint8Array,
+  b: Uint8Array,
   width: number,
   height: number,
-  radius: number,
+  tolerance: number,
 ): number {
-  const targetTolerance = dilate(targetEdges, width, height, radius);
+  const bTol = dilate(b, width, height, tolerance);
 
-  let sourceCount = 0;
-  let matchCount = 0;
+  let total = 0;
+  let matched = 0;
 
-  for (let i = 0; i < sourceEdges.length; i += 1) {
-    if (!sourceEdges[i]) continue;
-    sourceCount += 1;
-    if (targetTolerance[i]) matchCount += 1;
+  for (let i = 0; i < a.length; i += 1) {
+    if (!a[i]) continue;
+    total += 1;
+    if (bTol[i]) matched += 1;
   }
 
-  return sourceCount > 0 ? matchCount / sourceCount : 0;
+  return total > 0 ? matched / total : 0;
 }
 
-function alignmentScore(
-  referenceEdges: Uint8Array,
-  alignedCurrentEdges: Uint8Array,
+/**
+ * Search registration:
+ *
+ * PCA gives us a rough product pose.
+ * It is NOT trusted as the final rotation.
+ *
+ * Around that estimate we explicitly test many angles and small translations.
+ * We choose the pose giving the best bidirectional mask overlap.
+ *
+ * This is much more robust than the previous "one PCA angle = truth" method.
+ */
+function findBestRegistration(
+  currentMask: Uint8Array,
+  referenceMask: Uint8Array,
   width: number,
   height: number,
-): number {
-  const expected = softProximityScore(
-    referenceEdges,
-    alignedCurrentEdges,
-    width,
-    height,
-    CONTOUR_TOLERANCE_PX,
-  );
-
-  const placement = softProximityScore(
-    alignedCurrentEdges,
-    referenceEdges,
-    width,
-    height,
-    CONTOUR_TOLERANCE_PX,
-  );
-
-  return Math.min(expected, placement);
-}
-
-function autoAlignCurrentToReference(
-  current: ImageData,
-  reference: ImageData,
 ): {
-  alignedImage: ImageData;
-  alignedEdges: Uint8Array;
-  referenceEdges: Uint8Array;
+  currentPose: Pose;
+  referencePose: Pose;
+  rotation: number;
 } {
-  const width = NORMALIZED_WIDTH;
-  const height = NORMALIZED_HEIGHT;
+  const currentPose = estimatePose(currentMask, width, height);
+  const referencePose = estimatePose(referenceMask, width, height);
 
-  const referenceEdges = createEdgeMap(reference);
-  const currentEdges = createEdgeMap(current);
+  const initial = referencePose.angle - currentPose.angle;
 
-  const referenceStructure = largestStructureMask(
-    referenceEdges,
-    width,
-    height,
-  );
+  let bestRotation = initial;
+  let bestTargetPose: Pose = { ...referencePose };
+  let bestScore = -1;
 
-  const currentStructure = largestStructureMask(
-    currentEdges,
-    width,
-    height,
-  );
-
-  const referencePose = estimatePose(
-    referenceStructure,
-    width,
-    height,
-  );
-
-  const currentPose = estimatePose(
-    currentStructure,
-    width,
-    height,
-  );
-
-  const baseRotation = referencePose.angle - currentPose.angle;
-
-  // PCA orientation has a 180° ambiguity.
-  // Try both and keep the alignment that matches the reference best.
-  const candidates = [
-    baseRotation,
-    baseRotation + Math.PI,
+  const angleOffsetsDeg = [
+    -90, -75, -60, -45, -30, -20, -15, -10, -5,
+    0,
+    5, 10, 15, 20, 30, 45, 60, 75, 90,
   ];
 
-  let bestRotation = candidates[0];
-  let bestEdges = transformEdgeMap(
-    currentEdges,
-    width,
-    height,
-    currentPose,
-    referencePose,
-    bestRotation,
-  );
-  let bestScore = alignmentScore(
-    referenceEdges,
-    bestEdges,
-    width,
-    height,
-  );
+  // Also test the PCA-estimated orientation and its 180° ambiguity.
+  const angleCandidates = new Set<number>();
 
-  for (let i = 1; i < candidates.length; i += 1) {
-    const rotation = candidates[i];
+  for (const deg of angleOffsetsDeg) {
+    angleCandidates.add(initial + (deg * Math.PI) / 180);
+    angleCandidates.add(initial + Math.PI + (deg * Math.PI) / 180);
+  }
 
-    const transformed = transformEdgeMap(
-      currentEdges,
-      width,
-      height,
-      currentPose,
-      referencePose,
-      rotation,
-    );
+  const translationOffsets = [-24, -12, 0, 12, 24];
 
-    const score = alignmentScore(
-      referenceEdges,
-      transformed,
-      width,
-      height,
-    );
+  for (const rotation of angleCandidates) {
+    for (const dx of translationOffsets) {
+      for (const dy of translationOffsets) {
+        const targetPose: Pose = {
+          cx: referencePose.cx + dx,
+          cy: referencePose.cy + dy,
+          angle: referencePose.angle,
+        };
 
-    if (score > bestScore) {
-      bestScore = score;
-      bestRotation = rotation;
-      bestEdges = transformed;
+        const transformed = transformBinaryMap(
+          currentMask,
+          width,
+          height,
+          currentPose,
+          targetPose,
+          rotation,
+        );
+
+        const forward = overlapScore(
+          referenceMask,
+          transformed,
+          width,
+          height,
+          10,
+        );
+
+        const backward = overlapScore(
+          transformed,
+          referenceMask,
+          width,
+          height,
+          10,
+        );
+
+        const score = Math.min(forward, backward);
+
+        if (score > bestScore) {
+          bestScore = score;
+          bestRotation = rotation;
+          bestTargetPose = targetPose;
+        }
+      }
     }
   }
 
-  const alignedImage = transformImage(
-    current,
-    currentPose,
-    referencePose,
-    bestRotation,
-  );
-
   return {
-    alignedImage,
-    alignedEdges: bestEdges,
-    referenceEdges,
+    currentPose,
+    referencePose: bestTargetPose,
+    rotation: bestRotation,
   };
 }
 
@@ -778,7 +570,6 @@ function createOverlayUrl(
   for (let i = 0; i < referenceEdges.length; i += 1) {
     const p = i * 4;
 
-    // GREEN = reference contour correctly found nearby.
     if (referenceEdges[i] && dilatedCurrent[i]) {
       overlay.data[p] = 34;
       overlay.data[p + 1] = 197;
@@ -786,7 +577,6 @@ function createOverlayUrl(
       overlay.data[p + 3] = 235;
     }
 
-    // YELLOW = contour expected from the perfect product but missing.
     if (referenceEdges[i] && !dilatedCurrent[i]) {
       overlay.data[p] = 245;
       overlay.data[p + 1] = 158;
@@ -794,7 +584,6 @@ function createOverlayUrl(
       overlay.data[p + 3] = 245;
     }
 
-    // RED = current contour exists where the perfect reference does not.
     if (currentEdges[i] && !dilatedReference[i]) {
       overlay.data[p] = 220;
       overlay.data[p + 1] = 38;
@@ -822,19 +611,30 @@ export function inspectAgainstReference(
   const width = NORMALIZED_WIDTH;
   const height = NORMALIZED_HEIGHT;
 
-  /**
-   * IMPORTANT:
-   * Before comparison, the WHOLE current product is translated + rotated
-   * onto the reference product. Therefore a correct product may lie
-   * anywhere inside the AprilTag frame.
-   *
-   * Only internal / relative geometry remains relevant afterwards.
-   */
-  const {
-    alignedImage,
-    alignedEdges: currentEdges,
-    referenceEdges,
-  } = autoAlignCurrentToReference(current, reference);
+  // 1. Build rough product masks only for registration.
+  const referenceMask = createProductMask(reference);
+  const currentMask = createProductMask(current);
+
+  // If mask extraction is very weak, we still continue with the edge maps,
+  // but registration will naturally be less reliable.
+  const registration = findBestRegistration(
+    currentMask,
+    referenceMask,
+    width,
+    height,
+  );
+
+  // 2. Apply ONE global translation + rotation to the whole current product.
+  const alignedImage = transformImage(
+    current,
+    registration.currentPose,
+    registration.referencePose,
+    registration.rotation,
+  );
+
+  // 3. Only now create edge maps for the quality decision.
+  const referenceEdges = createEdgeMap(reference);
+  const currentEdges = createEdgeMap(alignedImage);
 
   const dilatedReference = dilate(
     referenceEdges,
@@ -857,8 +657,13 @@ export function inspectAgainstReference(
   const currentEdgePixels = countOnes(currentEdges);
 
   for (let i = 0; i < referenceEdges.length; i += 1) {
-    if (referenceEdges[i] && dilatedCurrent[i]) referenceMatched += 1;
-    if (currentEdges[i] && dilatedReference[i]) currentMatched += 1;
+    if (referenceEdges[i] && dilatedCurrent[i]) {
+      referenceMatched += 1;
+    }
+
+    if (currentEdges[i] && dilatedReference[i]) {
+      currentMatched += 1;
+    }
   }
 
   const expectedContourFound =
@@ -925,9 +730,7 @@ export function loadReference(product: ProductId): StoredReference | null {
 
     const parsed = JSON.parse(raw) as StoredReference;
 
-    if (!parsed.imageUrl || parsed.product !== product) {
-      return null;
-    }
+    if (!parsed.imageUrl || parsed.product !== product) return null;
 
     return parsed;
   } catch {
@@ -938,3 +741,72 @@ export function loadReference(product: ProductId): StoredReference | null {
 export function deleteReference(product: ProductId): void {
   localStorage.removeItem(REFERENCE_KEYS[product]);
 }
+'''
+
+inspection_path.write_text(prefix + tail, encoding="utf-8")
+
+# Create minimal package containing only the file the user needs.
+package = Path("/mnt/data/AprilTag_MaskSearch_Fix")
+if package.exists():
+    shutil.rmtree(package)
+(package / "artifacts" / "apriltag-tester" / "src" / "lib").mkdir(parents=True)
+
+shutil.copy2(
+    inspection_path,
+    package / "artifacts" / "apriltag-tester" / "src" / "lib" / "inspection.ts"
+)
+
+(package / "README.txt").write_text(
+"""ROBUST PRODUCT AUTO-REGISTRATION FIX
+
+Vervang alleen:
+artifacts/apriltag-tester/src/lib/inspection.ts
+
+Wat verandert:
+- Niet meer vertrouwen op ruwe edges voor de productpositie.
+- Eerst een grof productmasker zoeken:
+  * helder / laag-verzadigd aluminium
+  * donkere wielen / handvat
+- Alleen de grootste verbonden productstructuur wordt gebruikt.
+- PCA geeft enkel een STARTSCHATTING van de pose.
+- Daarna zoekt de app expliciet door meerdere rotaties en kleine verschuivingen.
+- De pose met de beste bidirectionele overlap wordt gekozen.
+- Vervolgens wordt het HELE huidige product virtueel uitgelijnd.
+- Pas daarna gebeurt de bestaande contourvergelijking + OK/NOK.
+
+Waarom:
+Een correct product mag nu op een andere plek en onder een andere rotatie binnen
+het AprilTag-kader liggen.
+
+Bestaand blijft:
+- AprilTag detector
+- perspectiefcorrectie naar 810 × 650
+- Product 1 / Product 2 referenties
+- 75% / 75% drempels
+- 18 px tolerantie
+- overlay
+- DigitalWorkstation integratie
+
+Test:
+1. Correct product op originele plaats
+2. Correct product duidelijk verschoven
+3. Correct product 20-45 graden gedraaid
+4. Fout product, bv. handvat verwijderd
+
+Let op:
+De camera moet nog steeds ongeveer top-down zijn. Een 2D-homografie kan echte 3D-parallax
+van een sterke schuine camerahoek niet oplossen.
+""",
+encoding="utf-8"
+)
+
+zip_path = Path("/mnt/data/AprilTag_MaskSearch_Fix.zip")
+if zip_path.exists():
+    zip_path.unlink()
+
+with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
+    for p in package.rglob("*"):
+        if p.is_file():
+            z.write(p, p.relative_to(package))
+
+print(zip_path)
