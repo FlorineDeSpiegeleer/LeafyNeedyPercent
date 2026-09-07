@@ -24,7 +24,8 @@ import {
 } from "lucide-react";
 
 import {
-  CONTOUR_MATCH_THRESHOLD,
+  EXPECTED_CONTOUR_THRESHOLD,
+  PLACEMENT_CONTOUR_THRESHOLD,
   NORMALIZED_HEIGHT,
   NORMALIZED_WIDTH,
   deleteReference,
@@ -664,8 +665,9 @@ export default function App() {
             <p>
               De nieuwe foto wordt rechtgetrokken en vergeleken met de
               perfecte referentie. Minstens{" "}
-              {Math.round(CONTOUR_MATCH_THRESHOLD * 100)}% van de verwachte
-              én huidige contour moet binnen de tolerantie vallen.
+              De contour wordt met een ruimere tolerantie vergeleken.
+              Verwachte contour moet minstens {Math.round(EXPECTED_CONTOUR_THRESHOLD * 100)}%
+              scoren en de huidige contour minstens {Math.round(PLACEMENT_CONTOUR_THRESHOLD * 100)}%.
             </p>
           </div>
         </section>
@@ -948,7 +950,7 @@ function CameraPanel({
           <div className="score-grid">
             <div
               className={
-                result.expectedContourFound >= result.threshold
+                result.expectedContourFound >= result.expectedThreshold
                   ? "score-box pass"
                   : "score-box fail"
               }
@@ -964,7 +966,7 @@ function CameraPanel({
 
             <div
               className={
-                result.currentContourInsideTolerance >= result.threshold
+                result.currentContourInsideTolerance >= result.placementThreshold
                   ? "score-box pass"
                   : "score-box fail"
               }
@@ -983,8 +985,9 @@ function CameraPanel({
           </div>
 
           <div className="decision-rule">
-            Goedkeuring vereist beide scores ≥{" "}
-            {Math.round(result.threshold * 100)}%.
+            Goedkeuring vereist: verwachte contour ≥{" "}
+            {Math.round(result.expectedThreshold * 100)}% en huidige contour ≥{" "}
+            {Math.round(result.placementThreshold * 100)}%.
           </div>
         </section>
       )}
