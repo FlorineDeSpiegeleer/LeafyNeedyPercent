@@ -1,4 +1,7 @@
-export type Point = { x: number; y: number };
+export type Point = {
+  x: number;
+  y: number;
+};
 
 export type Detection = {
   id: number;
@@ -6,7 +9,9 @@ export type Detection = {
   center?: Point;
 };
 
-export type ProductId = "product1" | "product2";
+export type ProductId =
+  | "product1"
+  | "product2";
 
 export type StoredReference = {
   product: ProductId;
@@ -18,12 +23,16 @@ export type OverlayInspectionResult = {
   status: "ok" | "nok";
   product: ProductId;
   score: number;
+
   expectedContourFound: number;
   currentContourInsideTolerance: number;
+
   referenceEdgePixels: number;
   currentEdgePixels: number;
+
   expectedThreshold: number;
   placementThreshold: number;
+
   overlayUrl: string;
 };
 
@@ -35,20 +44,42 @@ export const PLACEMENT_CONTOUR_THRESHOLD = 0.75;
 
 export const CONTOUR_TOLERANCE_PX = 18;
 
-export const REFERENCE_KEYS: Record<ProductId, string> = {
-  product1: "sirris-overlay-reference-product1-v1",
-  product2: "sirris-overlay-reference-product2-v1",
+export const REFERENCE_KEYS: Record<
+  ProductId,
+  string
+> = {
+  product1:
+    "sirris-overlay-reference-product1-v1",
+  product2:
+    "sirris-overlay-reference-product2-v1",
 };
 
-function centerOf(detection: Detection): Point {
-  if (detection.center) return detection.center;
+/* =========================================================
+   APRILTAG / HOMOGRAPHY
+   ========================================================= */
+
+function centerOf(
+  detection: Detection,
+): Point {
+  if (detection.center) {
+    return detection.center;
+  }
 
   return detection.corners.reduce(
-    (sum, p) => ({
-      x: sum.x + p.x / detection.corners.length,
-      y: sum.y + p.y / detection.corners.length,
+    (sum, point) => ({
+      x:
+        sum.x +
+        point.x /
+          detection.corners.length,
+      y:
+        sum.y +
+        point.y /
+          detection.corners.length,
     }),
-    { x: 0, y: 0 },
+    {
+      x: 0,
+      y: 0,
+    },
   );
 }
 
@@ -57,39 +88,93 @@ function solveLinearSystem(
   values: number[],
 ): number[] | null {
   const n = values.length;
-  const a = matrix.map((row, i) => [...row, values[i]]);
 
-  for (let col = 0; col < n; col += 1) {
+  const augmented = matrix.map(
+    (row, i) => [
+      ...row,
+      values[i],
+    ],
+  );
+
+  for (
+    let col = 0;
+    col < n;
+    col += 1
+  ) {
     let pivot = col;
 
-    for (let row = col + 1; row < n; row += 1) {
-      if (Math.abs(a[row][col]) > Math.abs(a[pivot][col])) {
+    for (
+      let row = col + 1;
+      row < n;
+      row += 1
+    ) {
+      if (
+        Math.abs(
+          augmented[row][col],
+        ) >
+        Math.abs(
+          augmented[pivot][col],
+        )
+      ) {
         pivot = row;
       }
     }
 
-    if (Math.abs(a[pivot][col]) < 1e-10) return null;
-
-    [a[col], a[pivot]] = [a[pivot], a[col]];
-
-    const divisor = a[col][col];
-
-    for (let j = col; j <= n; j += 1) {
-      a[col][j] /= divisor;
+    if (
+      Math.abs(
+        augmented[pivot][col],
+      ) < 1e-10
+    ) {
+      return null;
     }
 
-    for (let row = 0; row < n; row += 1) {
-      if (row === col) continue;
+    [
+      augmented[col],
+      augmented[pivot],
+    ] = [
+      augmented[pivot],
+      augmented[col],
+    ];
 
-      const factor = a[row][col];
+    const divisor =
+      augmented[col][col];
 
-      for (let j = col; j <= n; j += 1) {
-        a[row][j] -= factor * a[col][j];
+    for (
+      let j = col;
+      j <= n;
+      j += 1
+    ) {
+      augmented[col][j] /=
+        divisor;
+    }
+
+    for (
+      let row = 0;
+      row < n;
+      row += 1
+    ) {
+      if (row === col) {
+        continue;
+      }
+
+      const factor =
+        augmented[row][col];
+
+      for (
+        let j = col;
+        j <= n;
+        j += 1
+      ) {
+        augmented[row][j] -=
+          factor *
+          augmented[col][j];
       }
     }
   }
 
-  return a.map((row) => row[n]);
+  return augmented.map(
+    (row) => row[n],
+  );
 }
 
 function homographyFromFourPoints(
@@ -99,198 +184,407 @@ function homographyFromFourPoints(
   const matrix: number[][] = [];
   const values: number[] = [];
 
-  from.forEach((p, i) => {
-    const q = to[i];
+  from.forEach(
+    (point, index) => {
+      const target = to[index];
 
-    matrix.push([
-      p.x,
-      p.y,
-      1,
-      0,
-      0,
-      0,
-      -q.x * p.x,
-      -q.x * p.y,
-    ]);
+      matrix.push([
+        point.x,
+        point.y,
+        1,
+        0,
+        0,
+        0,
+        -target.x * point.x,
+        -target.x * point.y,
+      ]);
 
-    values.push(q.x);
+      values.push(
+        target.x,
+      );
 
-    matrix.push([
-      0,
-      0,
-      0,
-      p.x,
-      p.y,
-      1,
-      -q.y * p.x,
-      -q.y * p.y,
-    ]);
+      matrix.push([
+        0,
+        0,
+        0,
+        point.x,
+        point.y,
+        1,
+        -target.y * point.x,
+        -target.y * point.y,
+      ]);
 
-    values.push(q.y);
-  });
+      values.push(
+        target.y,
+      );
+    },
+  );
 
-  const h = solveLinearSystem(matrix, values);
+  const h =
+    solveLinearSystem(
+      matrix,
+      values,
+    );
 
-  return h ? [...h, 1] : null;
+  return h
+    ? [...h, 1]
+    : null;
 }
 
 export function normalizeImage(
   source: ImageData,
   detections: Detection[],
 ): ImageData | null {
-  const byId = new Map(detections.map((d) => [d.id, d]));
+  const byId =
+    new Map(
+      detections.map(
+        (detection) => [
+          detection.id,
+          detection,
+        ],
+      ),
+    );
 
-  const sourcePoints = [0, 1, 3, 2]
-    .map((id) => byId.get(id))
-    .filter((d): d is Detection => Boolean(d))
+  /*
+    Layout:
+    0 = TL
+    1 = TR
+    2 = BL
+    3 = BR
+  */
+
+  const sourcePoints = [
+    0,
+    1,
+    3,
+    2,
+  ]
+    .map(
+      (id) =>
+        byId.get(id),
+    )
+    .filter(
+      (
+        detection,
+      ): detection is Detection =>
+        Boolean(detection),
+    )
     .map(centerOf);
 
-  if (sourcePoints.length !== 4) return null;
+  if (
+    sourcePoints.length !== 4
+  ) {
+    return null;
+  }
 
-  const destinationPoints: Point[] = [
-    { x: 0, y: 0 },
-    { x: NORMALIZED_WIDTH - 1, y: 0 },
-    {
-      x: NORMALIZED_WIDTH - 1,
-      y: NORMALIZED_HEIGHT - 1,
-    },
-    { x: 0, y: NORMALIZED_HEIGHT - 1 },
-  ];
+  const destinationPoints: Point[] =
+    [
+      {
+        x: 0,
+        y: 0,
+      },
+      {
+        x:
+          NORMALIZED_WIDTH -
+          1,
+        y: 0,
+      },
+      {
+        x:
+          NORMALIZED_WIDTH -
+          1,
+        y:
+          NORMALIZED_HEIGHT -
+          1,
+      },
+      {
+        x: 0,
+        y:
+          NORMALIZED_HEIGHT -
+          1,
+      },
+    ];
 
-  const h = homographyFromFourPoints(
-    destinationPoints,
-    sourcePoints,
-  );
+  const homography =
+    homographyFromFourPoints(
+      destinationPoints,
+      sourcePoints,
+    );
 
-  if (!h) return null;
+  if (!homography) {
+    return null;
+  }
 
-  const output = new ImageData(
-    NORMALIZED_WIDTH,
-    NORMALIZED_HEIGHT,
-  );
+  const output =
+    new ImageData(
+      NORMALIZED_WIDTH,
+      NORMALIZED_HEIGHT,
+    );
 
-  for (let y = 0; y < NORMALIZED_HEIGHT; y += 1) {
-    for (let x = 0; x < NORMALIZED_WIDTH; x += 1) {
-      const denominator = h[6] * x + h[7] * y + h[8];
+  for (
+    let y = 0;
+    y <
+    NORMALIZED_HEIGHT;
+    y += 1
+  ) {
+    for (
+      let x = 0;
+      x <
+      NORMALIZED_WIDTH;
+      x += 1
+    ) {
+      const denominator =
+        homography[6] * x +
+        homography[7] * y +
+        homography[8];
 
       const sx =
-        (h[0] * x + h[1] * y + h[2]) / denominator;
+        (
+          homography[0] *
+            x +
+          homography[1] *
+            y +
+          homography[2]
+        ) /
+        denominator;
 
       const sy =
-        (h[3] * x + h[4] * y + h[5]) / denominator;
+        (
+          homography[3] *
+            x +
+          homography[4] *
+            y +
+          homography[5]
+        ) /
+        denominator;
 
-      const out = (y * NORMALIZED_WIDTH + x) * 4;
+      const outputIndex =
+        (
+          y *
+            NORMALIZED_WIDTH +
+          x
+        ) *
+        4;
 
       if (
         !Number.isFinite(sx) ||
         !Number.isFinite(sy) ||
         sx < 0 ||
         sy < 0 ||
-        sx >= source.width - 1 ||
-        sy >= source.height - 1
+        sx >=
+          source.width - 1 ||
+        sy >=
+          source.height - 1
       ) {
-        output.data[out] = 240;
-        output.data[out + 1] = 240;
-        output.data[out + 2] = 240;
-        output.data[out + 3] = 255;
+        output.data[
+          outputIndex
+        ] = 240;
+
+        output.data[
+          outputIndex + 1
+        ] = 240;
+
+        output.data[
+          outputIndex + 2
+        ] = 240;
+
+        output.data[
+          outputIndex + 3
+        ] = 255;
+
         continue;
       }
 
-      const x0 = Math.floor(sx);
-      const y0 = Math.floor(sy);
+      const x0 =
+        Math.floor(sx);
 
-      const x1 = Math.min(source.width - 1, x0 + 1);
-      const y1 = Math.min(source.height - 1, y0 + 1);
+      const y0 =
+        Math.floor(sy);
 
-      const dx = sx - x0;
-      const dy = sy - y0;
+      const x1 =
+        Math.min(
+          source.width - 1,
+          x0 + 1,
+        );
 
-      for (let c = 0; c < 3; c += 1) {
+      const y1 =
+        Math.min(
+          source.height - 1,
+          y0 + 1,
+        );
+
+      const dx =
+        sx - x0;
+
+      const dy =
+        sy - y0;
+
+      for (
+        let channel = 0;
+        channel < 3;
+        channel += 1
+      ) {
         const p00 =
           source.data[
-            (y0 * source.width + x0) * 4 + c
+            (
+              y0 *
+                source.width +
+              x0
+            ) *
+              4 +
+              channel
           ];
 
         const p10 =
           source.data[
-            (y0 * source.width + x1) * 4 + c
+            (
+              y0 *
+                source.width +
+              x1
+            ) *
+              4 +
+              channel
           ];
 
         const p01 =
           source.data[
-            (y1 * source.width + x0) * 4 + c
+            (
+              y1 *
+                source.width +
+              x0
+            ) *
+              4 +
+              channel
           ];
 
         const p11 =
           source.data[
-            (y1 * source.width + x1) * 4 + c
+            (
+              y1 *
+                source.width +
+              x1
+            ) *
+              4 +
+              channel
           ];
 
-        const top = p00 * (1 - dx) + p10 * dx;
-        const bottom = p01 * (1 - dx) + p11 * dx;
+        const top =
+          p00 *
+            (1 - dx) +
+          p10 * dx;
 
-        output.data[out + c] = Math.round(
-          top * (1 - dy) + bottom * dy,
-        );
+        const bottom =
+          p01 *
+            (1 - dx) +
+          p11 * dx;
+
+        output.data[
+          outputIndex +
+            channel
+        ] =
+          Math.round(
+            top *
+              (1 - dy) +
+              bottom * dy,
+          );
       }
 
-      output.data[out + 3] = 255;
+      output.data[
+        outputIndex + 3
+      ] = 255;
     }
   }
 
   return output;
 }
 
+/* =========================================================
+   IMAGE CONVERSION
+   ========================================================= */
+
 export function imageDataToUrl(
   imageData: ImageData,
   quality = 0.94,
 ): string {
-  const canvas = document.createElement("canvas");
+  const canvas =
+    document.createElement(
+      "canvas",
+    );
 
-  canvas.width = imageData.width;
-  canvas.height = imageData.height;
+  canvas.width =
+    imageData.width;
 
-  const ctx = canvas.getContext("2d");
+  canvas.height =
+    imageData.height;
 
-  if (!ctx) {
-    throw new Error("Canvas unavailable");
+  const context =
+    canvas.getContext("2d");
+
+  if (!context) {
+    throw new Error(
+      "Canvas unavailable",
+    );
   }
 
-  ctx.putImageData(imageData, 0, 0);
+  context.putImageData(
+    imageData,
+    0,
+    0,
+  );
 
-  return canvas.toDataURL("image/jpeg", quality);
+  return canvas.toDataURL(
+    "image/jpeg",
+    quality,
+  );
 }
 
 export async function imageUrlToImageData(
   url: string,
 ): Promise<ImageData> {
-  const image = new Image();
+  const image =
+    new Image();
 
-  await new Promise<void>((resolve, reject) => {
-    image.onload = () => resolve();
+  await new Promise<void>(
+    (
+      resolve,
+      reject,
+    ) => {
+      image.onload =
+        () => resolve();
 
-    image.onerror = () =>
-      reject(
-        new Error(
-          "Reference image could not be loaded.",
-        ),
-      );
+      image.onerror =
+        () =>
+          reject(
+            new Error(
+              "Reference image could not be loaded.",
+            ),
+          );
 
-    image.src = url;
-  });
+      image.src = url;
+    },
+  );
 
-  const canvas = document.createElement("canvas");
+  const canvas =
+    document.createElement(
+      "canvas",
+    );
 
-  canvas.width = NORMALIZED_WIDTH;
-  canvas.height = NORMALIZED_HEIGHT;
+  canvas.width =
+    NORMALIZED_WIDTH;
 
-  const ctx = canvas.getContext("2d");
+  canvas.height =
+    NORMALIZED_HEIGHT;
 
-  if (!ctx) {
-    throw new Error("Canvas unavailable");
+  const context =
+    canvas.getContext("2d");
+
+  if (!context) {
+    throw new Error(
+      "Canvas unavailable",
+    );
   }
 
-  ctx.drawImage(
+  context.drawImage(
     image,
     0,
     0,
@@ -298,7 +592,7 @@ export async function imageUrlToImageData(
     NORMALIZED_HEIGHT,
   );
 
-  return ctx.getImageData(
+  return context.getImageData(
     0,
     0,
     NORMALIZED_WIDTH,
@@ -306,112 +600,247 @@ export async function imageUrlToImageData(
   );
 }
 
+/* =========================================================
+   BASIC IMAGE PROCESSING
+   ========================================================= */
+
 function luminance(
   image: ImageData,
   x: number,
   y: number,
 ): number {
-  const i = (y * image.width + x) * 4;
+  const index =
+    (
+      y *
+        image.width +
+      x
+    ) *
+    4;
 
   return (
-    image.data[i] * 0.299 +
-    image.data[i + 1] * 0.587 +
-    image.data[i + 2] * 0.114
+    image.data[index] *
+      0.299 +
+    image.data[
+      index + 1
+    ] *
+      0.587 +
+    image.data[
+      index + 2
+    ] *
+      0.114
   );
 }
 
 function blurredGray(
   image: ImageData,
 ): Float32Array {
-  const { width, height } = image;
+  const {
+    width,
+    height,
+  } = image;
 
-  const gray = new Float32Array(
-    width * height,
-  );
+  const gray =
+    new Float32Array(
+      width * height,
+    );
 
-  const blur = new Float32Array(
-    width * height,
-  );
+  const blurred =
+    new Float32Array(
+      width * height,
+    );
 
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      gray[y * width + x] =
-        luminance(image, x, y);
+  for (
+    let y = 0;
+    y < height;
+    y += 1
+  ) {
+    for (
+      let x = 0;
+      x < width;
+      x += 1
+    ) {
+      gray[
+        y * width + x
+      ] =
+        luminance(
+          image,
+          x,
+          y,
+        );
     }
   }
 
-  for (let y = 1; y < height - 1; y += 1) {
-    for (let x = 1; x < width - 1; x += 1) {
+  for (
+    let y = 1;
+    y < height - 1;
+    y += 1
+  ) {
+    for (
+      let x = 1;
+      x < width - 1;
+      x += 1
+    ) {
       let sum = 0;
 
-      for (let oy = -1; oy <= 1; oy += 1) {
-        for (let ox = -1; ox <= 1; ox += 1) {
+      for (
+        let oy = -1;
+        oy <= 1;
+        oy += 1
+      ) {
+        for (
+          let ox = -1;
+          ox <= 1;
+          ox += 1
+        ) {
           sum +=
             gray[
-              (y + oy) * width + (x + ox)
+              (
+                y + oy
+              ) *
+                width +
+                (
+                  x + ox
+                )
             ];
         }
       }
 
-      blur[y * width + x] = sum / 9;
+      blurred[
+        y * width + x
+      ] =
+        sum / 9;
     }
   }
 
-  return blur;
+  return blurred;
 }
 
 function createEdgeMap(
   image: ImageData,
 ): Uint8Array {
-  const { width, height } = image;
+  const {
+    width,
+    height,
+  } = image;
 
-  const gray = blurredGray(image);
+  const gray =
+    blurredGray(image);
 
-  const edges = new Uint8Array(
-    width * height,
-  );
+  const edges =
+    new Uint8Array(
+      width * height,
+    );
 
   const EDGE_THRESHOLD = 28;
 
-  for (let y = 2; y < height - 2; y += 1) {
-    for (let x = 2; x < width - 2; x += 1) {
+  for (
+    let y = 2;
+    y < height - 2;
+    y += 1
+  ) {
+    for (
+      let x = 2;
+      x < width - 2;
+      x += 1
+    ) {
       const left =
-        gray[y * width + x - 1];
+        gray[
+          y *
+            width +
+            x -
+            1
+        ];
 
       const right =
-        gray[y * width + x + 1];
+        gray[
+          y *
+            width +
+            x +
+            1
+        ];
 
       const top =
-        gray[(y - 1) * width + x];
+        gray[
+          (
+            y - 1
+          ) *
+            width +
+            x
+        ];
 
       const bottom =
-        gray[(y + 1) * width + x];
+        gray[
+          (
+            y + 1
+          ) *
+            width +
+            x
+        ];
 
       const gradient =
-        Math.abs(right - left) +
-        Math.abs(bottom - top);
+        Math.abs(
+          right -
+            left,
+        ) +
+        Math.abs(
+          bottom -
+            top,
+        );
 
-      if (gradient >= EDGE_THRESHOLD) {
-        edges[y * width + x] = 1;
+      if (
+        gradient >=
+        EDGE_THRESHOLD
+      ) {
+        edges[
+          y *
+            width +
+            x
+        ] = 1;
       }
     }
   }
 
+  /*
+    Buitenrand negeren zodat
+    AprilTags / rand van werkvlak
+    minder invloed hebben.
+  */
+
   const marginX =
-    Math.round(width * 0.045);
+    Math.round(
+      width * 0.045,
+    );
 
   const marginY =
-    Math.round(height * 0.045);
+    Math.round(
+      height * 0.045,
+    );
 
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
+  for (
+    let y = 0;
+    y < height;
+    y += 1
+  ) {
+    for (
+      let x = 0;
+      x < width;
+      x += 1
+    ) {
       if (
         x < marginX ||
         y < marginY ||
-        x >= width - marginX ||
-        y >= height - marginY
+        x >=
+          width -
+            marginX ||
+        y >=
+          height -
+            marginY
       ) {
-        edges[y * width + x] = 0;
+        edges[
+          y *
+            width +
+            x
+        ] = 0;
       }
     }
   }
@@ -419,41 +848,67 @@ function createEdgeMap(
   return edges;
 }
 
+/* =========================================================
+   MORPHOLOGY
+   ========================================================= */
+
 function dilate(
   source: Uint8Array,
   width: number,
   height: number,
   radius: number,
 ): Uint8Array {
-  const out = new Uint8Array(
-    source.length,
-  );
+  const output =
+    new Uint8Array(
+      source.length,
+    );
 
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      if (!source[y * width + x]) {
+  for (
+    let y = 0;
+    y < height;
+    y += 1
+  ) {
+    for (
+      let x = 0;
+      x < width;
+      x += 1
+    ) {
+      if (
+        !source[
+          y *
+            width +
+            x
+        ]
+      ) {
         continue;
       }
 
       for (
-        let oy = -radius;
+        let oy =
+          -radius;
         oy <= radius;
         oy += 1
       ) {
         for (
-          let ox = -radius;
+          let ox =
+            -radius;
           ox <= radius;
           ox += 1
         ) {
           if (
-            ox * ox + oy * oy >
-            radius * radius
+            ox * ox +
+              oy * oy >
+            radius *
+              radius
           ) {
             continue;
           }
 
-          const nx = x + ox;
-          const ny = y + oy;
+          const nx =
+            x + ox;
+
+          const ny =
+            y + oy;
 
           if (
             nx < 0 ||
@@ -464,13 +919,17 @@ function dilate(
             continue;
           }
 
-          out[ny * width + nx] = 1;
+          output[
+            ny *
+              width +
+              nx
+          ] = 1;
         }
       }
     }
   }
 
-  return out;
+  return output;
 }
 
 function erode(
@@ -479,43 +938,56 @@ function erode(
   height: number,
   radius: number,
 ): Uint8Array {
-  const out = new Uint8Array(
-    source.length,
-  );
+  const output =
+    new Uint8Array(
+      source.length,
+    );
 
   for (
     let y = radius;
-    y < height - radius;
+    y <
+    height - radius;
     y += 1
   ) {
     for (
       let x = radius;
-      x < width - radius;
+      x <
+      width - radius;
       x += 1
     ) {
       let keep = true;
 
       for (
-        let oy = -radius;
-        oy <= radius && keep;
+        let oy =
+          -radius;
+        oy <= radius &&
+        keep;
         oy += 1
       ) {
         for (
-          let ox = -radius;
+          let ox =
+            -radius;
           ox <= radius;
           ox += 1
         ) {
           if (
-            ox * ox + oy * oy >
-            radius * radius
+            ox * ox +
+              oy * oy >
+            radius *
+              radius
           ) {
             continue;
           }
 
           if (
             !source[
-              (y + oy) * width +
-                (x + ox)
+              (
+                y + oy
+              ) *
+                width +
+                (
+                  x + ox
+                )
             ]
           ) {
             keep = false;
@@ -525,12 +997,16 @@ function erode(
       }
 
       if (keep) {
-        out[y * width + x] = 1;
+        output[
+          y *
+            width +
+            x
+        ] = 1;
       }
     }
   }
 
-  return out;
+  return output;
 }
 
 function closeMask(
@@ -558,11 +1034,12 @@ function countOnes(
   let count = 0;
 
   for (
-    let i = 0;
-    i < map.length;
-    i += 1
+    let index = 0;
+    index <
+    map.length;
+    index += 1
   ) {
-    if (map[i]) {
+    if (map[index]) {
       count += 1;
     }
   }
@@ -570,18 +1047,33 @@ function countOnes(
   return count;
 }
 
+/* =========================================================
+   PRODUCT MASK
+   ========================================================= */
+
 function rgbAt(
   image: ImageData,
   x: number,
   y: number,
 ) {
-  const i =
-    (y * image.width + x) * 4;
+  const index =
+    (
+      y *
+        image.width +
+      x
+    ) *
+    4;
 
   return {
-    r: image.data[i],
-    g: image.data[i + 1],
-    b: image.data[i + 2],
+    r: image.data[index],
+    g:
+      image.data[
+        index + 1
+      ],
+    b:
+      image.data[
+        index + 2
+      ],
   };
 }
 
@@ -591,25 +1083,45 @@ function largestConnectedComponent(
   height: number,
 ): Uint8Array {
   const visited =
-    new Uint8Array(source.length);
+    new Uint8Array(
+      source.length,
+    );
 
-  let best: number[] = [];
+  let best: number[] =
+    [];
 
-  const qx = new Int32Array(
-    width * height,
-  );
+  const queueX =
+    new Int32Array(
+      width * height,
+    );
 
-  const qy = new Int32Array(
-    width * height,
-  );
+  const queueY =
+    new Int32Array(
+      width * height,
+    );
 
-  for (let sy = 0; sy < height; sy += 1) {
-    for (let sx = 0; sx < width; sx += 1) {
-      const si = sy * width + sx;
+  for (
+    let startY = 0;
+    startY < height;
+    startY += 1
+  ) {
+    for (
+      let startX = 0;
+      startX < width;
+      startX += 1
+    ) {
+      const startIndex =
+        startY *
+          width +
+        startX;
 
       if (
-        !source[si] ||
-        visited[si]
+        !source[
+          startIndex
+        ] ||
+        visited[
+          startIndex
+        ]
       ) {
         continue;
       }
@@ -617,23 +1129,36 @@ function largestConnectedComponent(
       let head = 0;
       let tail = 0;
 
-      qx[tail] = sx;
-      qy[tail] = sy;
+      queueX[tail] =
+        startX;
+
+      queueY[tail] =
+        startY;
 
       tail += 1;
 
-      visited[si] = 1;
+      visited[
+        startIndex
+      ] = 1;
 
-      const pixels: number[] = [];
+      const pixels: number[] =
+        [];
 
-      while (head < tail) {
-        const x = qx[head];
-        const y = qy[head];
+      while (
+        head < tail
+      ) {
+        const x =
+          queueX[head];
+
+        const y =
+          queueY[head];
 
         head += 1;
 
         pixels.push(
-          y * width + x,
+          y *
+            width +
+            x,
         );
 
         for (
@@ -653,8 +1178,11 @@ function largestConnectedComponent(
               continue;
             }
 
-            const nx = x + ox;
-            const ny = y + oy;
+            const nx =
+              x + ox;
+
+            const ny =
+              y + oy;
 
             if (
               nx < 0 ||
@@ -665,20 +1193,31 @@ function largestConnectedComponent(
               continue;
             }
 
-            const ni =
-              ny * width + nx;
+            const nextIndex =
+              ny *
+                width +
+              nx;
 
             if (
-              !source[ni] ||
-              visited[ni]
+              !source[
+                nextIndex
+              ] ||
+              visited[
+                nextIndex
+              ]
             ) {
               continue;
             }
 
-            visited[ni] = 1;
+            visited[
+              nextIndex
+            ] = 1;
 
-            qx[tail] = nx;
-            qy[tail] = ny;
+            queueX[tail] =
+              nx;
+
+            queueY[tail] =
+              ny;
 
             tail += 1;
           }
@@ -694,43 +1233,62 @@ function largestConnectedComponent(
     }
   }
 
-  const out =
-    new Uint8Array(source.length);
+  const output =
+    new Uint8Array(
+      source.length,
+    );
 
-  for (const i of best) {
-    out[i] = 1;
+  for (
+    const index
+    of best
+  ) {
+    output[index] = 1;
   }
 
-  return out;
+  return output;
 }
 
-/**
- * Dit masker wordt ALLEEN gebruikt
- * om het volledige product uit te lijnen.
- *
- * De uiteindelijke OK/NOK blijft
- * gebaseerd op contourvergelijking.
- */
+/*
+  Dit masker is enkel bedoeld
+  om de globale positie en rotatie
+  van het volledige product te bepalen.
+
+  Eindbeslissing gebeurt nog altijd
+  via contourvergelijking.
+*/
+
 function createProductMask(
   image: ImageData,
 ): Uint8Array {
-  const { width, height } = image;
+  const {
+    width,
+    height,
+  } = image;
 
-  const mask = new Uint8Array(
-    width * height,
-  );
+  const mask =
+    new Uint8Array(
+      width * height,
+    );
 
   const minX =
-    Math.round(width * 0.05);
+    Math.round(
+      width * 0.05,
+    );
 
   const maxX =
-    Math.round(width * 0.95);
+    Math.round(
+      width * 0.95,
+    );
 
   const minY =
-    Math.round(height * 0.05);
+    Math.round(
+      height * 0.05,
+    );
 
   const maxY =
-    Math.round(height * 0.95);
+    Math.round(
+      height * 0.95,
+    );
 
   for (
     let y = minY;
@@ -742,23 +1300,46 @@ function createProductMask(
       x < maxX;
       x += 1
     ) {
-      const { r, g, b } =
-        rgbAt(image, x, y);
+      const {
+        r,
+        g,
+        b,
+      } =
+        rgbAt(
+          image,
+          x,
+          y,
+        );
 
-      const maxC =
-        Math.max(r, g, b);
+      const maxColor =
+        Math.max(
+          r,
+          g,
+          b,
+        );
 
-      const minC =
-        Math.min(r, g, b);
+      const minColor =
+        Math.min(
+          r,
+          g,
+          b,
+        );
 
       const saturation =
-        maxC - minC;
+        maxColor -
+        minColor;
 
       const brightness =
-        (r + g + b) / 3;
+        (
+          r +
+          g +
+          b
+        ) /
+        3;
 
       const aluminium =
-        brightness >= 145 &&
+        brightness >=
+          145 &&
         saturation <= 80;
 
       const darkPart =
@@ -768,24 +1349,30 @@ function createProductMask(
         aluminium ||
         darkPart
       ) {
-        mask[y * width + x] = 1;
+        mask[
+          y *
+            width +
+            x
+        ] = 1;
       }
     }
   }
 
-  let cleaned = closeMask(
-    mask,
-    width,
-    height,
-    3,
-  );
+  let cleaned =
+    closeMask(
+      mask,
+      width,
+      height,
+      3,
+    );
 
-  cleaned = dilate(
-    cleaned,
-    width,
-    height,
-    2,
-  );
+  cleaned =
+    dilate(
+      cleaned,
+      width,
+      height,
+      2,
+    );
 
   return largestConnectedComponent(
     cleaned,
@@ -793,6 +1380,10 @@ function createProductMask(
     height,
   );
 }
+
+/* =========================================================
+   POSE
+   ========================================================= */
 
 type Pose = {
   cx: number;
@@ -809,9 +1400,23 @@ function estimatePose(
   let sumX = 0;
   let sumY = 0;
 
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      if (!mask[y * width + x]) {
+  for (
+    let y = 0;
+    y < height;
+    y += 1
+  ) {
+    for (
+      let x = 0;
+      x < width;
+      x += 1
+    ) {
+      if (
+        !mask[
+          y *
+            width +
+            x
+        ]
+      ) {
         continue;
       }
 
@@ -829,25 +1434,50 @@ function estimatePose(
     };
   }
 
-  const cx = sumX / count;
-  const cy = sumY / count;
+  const cx =
+    sumX / count;
+
+  const cy =
+    sumY / count;
 
   let xx = 0;
   let yy = 0;
   let xy = 0;
 
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      if (!mask[y * width + x]) {
+  for (
+    let y = 0;
+    y < height;
+    y += 1
+  ) {
+    for (
+      let x = 0;
+      x < width;
+      x += 1
+    ) {
+      if (
+        !mask[
+          y *
+            width +
+            x
+        ]
+      ) {
         continue;
       }
 
-      const dx = x - cx;
-      const dy = y - cy;
+      const dx =
+        x - cx;
 
-      xx += dx * dx;
-      yy += dy * dy;
-      xy += dx * dy;
+      const dy =
+        y - cy;
+
+      xx +=
+        dx * dx;
+
+      yy +=
+        dy * dy;
+
+      xy +=
+        dx * dy;
     }
   }
 
@@ -865,247 +1495,96 @@ function estimatePose(
   };
 }
 
-function transformBinaryMap(
-  source: Uint8Array,
+/* =========================================================
+   FAST REGISTRATION
+   ========================================================= */
+
+type MaskPoint = {
+  x: number;
+  y: number;
+};
+
+function sampleMaskPoints(
+  mask: Uint8Array,
   width: number,
   height: number,
-  sourcePose: Pose,
-  targetPose: Pose,
-  rotation: number,
-): Uint8Array {
-  const out =
-    new Uint8Array(source.length);
-
-  const cos =
-    Math.cos(rotation);
-
-  const sin =
-    Math.sin(rotation);
-
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      if (!source[y * width + x]) {
-        continue;
-      }
-
-      const dx =
-        x - sourcePose.cx;
-
-      const dy =
-        y - sourcePose.cy;
-
-      const tx =
-        targetPose.cx +
-        cos * dx -
-        sin * dy;
-
-      const ty =
-        targetPose.cy +
-        sin * dx +
-        cos * dy;
-
-      const nx =
-        Math.round(tx);
-
-      const ny =
-        Math.round(ty);
-
-      if (
-        nx < 0 ||
-        ny < 0 ||
-        nx >= width ||
-        ny >= height
-      ) {
-        continue;
-      }
-
-      out[ny * width + nx] = 1;
-    }
-  }
-
-  return out;
-}
-
-function transformImage(
-  source: ImageData,
-  sourcePose: Pose,
-  targetPose: Pose,
-  rotation: number,
-): ImageData {
-  const { width, height } = source;
-
-  const out =
-    new ImageData(width, height);
-
-  for (
-    let i = 0;
-    i < out.data.length;
-    i += 4
-  ) {
-    out.data[i] = 238;
-    out.data[i + 1] = 238;
-    out.data[i + 2] = 238;
-    out.data[i + 3] = 255;
-  }
-
-  const cos =
-    Math.cos(-rotation);
-
-  const sin =
-    Math.sin(-rotation);
-
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const dx =
-        x - targetPose.cx;
-
-      const dy =
-        y - targetPose.cy;
-
-      const sx =
-        sourcePose.cx +
-        cos * dx -
-        sin * dy;
-
-      const sy =
-        sourcePose.cy +
-        sin * dx +
-        cos * dy;
-
-      if (
-        sx < 0 ||
-        sy < 0 ||
-        sx >= width - 1 ||
-        sy >= height - 1
-      ) {
-        continue;
-      }
-
-      const x0 =
-        Math.floor(sx);
-
-      const y0 =
-        Math.floor(sy);
-
-      const x1 =
-        Math.min(
-          width - 1,
-          x0 + 1,
-        );
-
-      const y1 =
-        Math.min(
-          height - 1,
-          y0 + 1,
-        );
-
-      const fx =
-        sx - x0;
-
-      const fy =
-        sy - y0;
-
-      const oi =
-        (y * width + x) * 4;
-
-      for (
-        let c = 0;
-        c < 3;
-        c += 1
-      ) {
-        const p00 =
-          source.data[
-            (y0 * width + x0) *
-              4 +
-              c
-          ];
-
-        const p10 =
-          source.data[
-            (y0 * width + x1) *
-              4 +
-              c
-          ];
-
-        const p01 =
-          source.data[
-            (y1 * width + x0) *
-              4 +
-              c
-          ];
-
-        const p11 =
-          source.data[
-            (y1 * width + x1) *
-              4 +
-              c
-          ];
-
-        const top =
-          p00 * (1 - fx) +
-          p10 * fx;
-
-        const bottom =
-          p01 * (1 - fx) +
-          p11 * fx;
-
-        out.data[oi + c] =
-          Math.round(
-            top * (1 - fy) +
-              bottom * fy,
-          );
-      }
-
-      out.data[oi + 3] = 255;
-    }
-  }
-
-  return out;
-}
-
-function overlapScore(
-  a: Uint8Array,
-  b: Uint8Array,
-  width: number,
-  height: number,
-  tolerance: number,
-): number {
-  const bTol = dilate(
-    b,
-    width,
-    height,
-    tolerance,
-  );
-
+  maxPoints = 1600,
+): MaskPoint[] {
   let total = 0;
-  let matched = 0;
 
   for (
-    let i = 0;
-    i < a.length;
-    i += 1
+    let index = 0;
+    index <
+    mask.length;
+    index += 1
   ) {
-    if (!a[i]) {
-      continue;
-    }
-
-    total += 1;
-
-    if (bTol[i]) {
-      matched += 1;
+    if (mask[index]) {
+      total += 1;
     }
   }
 
-  return total > 0
-    ? matched / total
-    : 0;
+  if (total === 0) {
+    return [];
+  }
+
+  const step =
+    Math.max(
+      1,
+      Math.floor(
+        total /
+          maxPoints,
+      ),
+    );
+
+  const points: MaskPoint[] =
+    [];
+
+  let seen = 0;
+
+  for (
+    let y = 0;
+    y < height;
+    y += 1
+  ) {
+    for (
+      let x = 0;
+      x < width;
+      x += 1
+    ) {
+      if (
+        !mask[
+          y *
+            width +
+            x
+        ]
+      ) {
+        continue;
+      }
+
+      if (
+        seen % step ===
+        0
+      ) {
+        points.push({
+          x,
+          y,
+        });
+
+        if (
+          points.length >=
+          maxPoints
+        ) {
+          return points;
+        }
+      }
+
+      seen += 1;
+    }
+  }
+
+  return points;
 }
 
-/**
- * PCA geeft enkel een eerste schatting.
- * Daarna testen we meerdere rotaties
- * en kleine verschuivingen.
- */
 function findBestRegistration(
   currentMask: Uint8Array,
   referenceMask: Uint8Array,
@@ -1130,73 +1609,141 @@ function findBestRegistration(
       height,
     );
 
-  const initial =
+  const initialRotation =
     referencePose.angle -
     currentPose.angle;
 
-  let bestRotation = initial;
+  /*
+    Referentiemasker krijgt
+    tijdens de zoektocht
+    wat extra tolerantie.
+  */
 
-  let bestTargetPose: Pose = {
-    ...referencePose,
-  };
+  const referenceTolerance =
+    dilate(
+      referenceMask,
+      width,
+      height,
+      12,
+    );
 
-  let bestScore = -1;
+  /*
+    Slechts een steekproef
+    van het productmasker
+    gebruiken voor alignment.
+  */
 
-  const angleOffsetsDeg = [
-    -90,
-    -75,
-    -60,
-    -45,
-    -30,
-    -20,
-    -15,
-    -10,
-    -5,
-    0,
-    5,
-    10,
-    15,
-    20,
-    30,
-    45,
-    60,
-    75,
-    90,
-  ];
+  const currentPoints =
+    sampleMaskPoints(
+      currentMask,
+      width,
+      height,
+      1600,
+    );
 
-  const angleCandidates =
-    new Set<number>();
+  if (
+    currentPoints.length ===
+    0
+  ) {
+    return {
+      currentPose,
+      targetPose:
+        referencePose,
+      rotation:
+        initialRotation,
+    };
+  }
+
+  /*
+    PCA geeft al een grove hoek.
+    Daarom alleen rond die hoek zoeken.
+  */
+
+  const angleOffsetsDeg =
+    [
+      -45,
+      -30,
+      -20,
+      -12,
+      -6,
+      0,
+      6,
+      12,
+      20,
+      30,
+      45,
+    ];
+
+  const angleCandidates: number[] =
+    [];
 
   for (
-    const deg
+    const degrees
     of angleOffsetsDeg
   ) {
     const offset =
-      (deg * Math.PI) / 180;
+      (
+        degrees *
+        Math.PI
+      ) /
+      180;
 
-    angleCandidates.add(
-      initial + offset,
+    angleCandidates.push(
+      initialRotation +
+        offset,
     );
 
-    angleCandidates.add(
-      initial +
+    /*
+      PCA heeft 180° ambiguïteit.
+    */
+
+    angleCandidates.push(
+      initialRotation +
         Math.PI +
         offset,
     );
   }
 
-  const translationOffsets = [
-    -24,
-    -12,
-    0,
-    12,
-    24,
-  ];
+  /*
+    Centroid zorgt al voor
+    grove translation alignment.
+
+    Enkel nog lokaal verfijnen.
+  */
+
+  const translationOffsets =
+    [
+      -20,
+      -10,
+      0,
+      10,
+      20,
+    ];
+
+  let bestScore = -1;
+
+  let bestRotation =
+    initialRotation;
+
+  let bestTargetPose: Pose =
+    {
+      ...referencePose,
+    };
 
   for (
     const rotation
     of angleCandidates
   ) {
+    const cos =
+      Math.cos(
+        rotation,
+      );
+
+    const sin =
+      Math.sin(
+        rotation,
+      );
+
     for (
       const dx
       of translationOffsets
@@ -1205,50 +1752,76 @@ function findBestRegistration(
         const dy
         of translationOffsets
       ) {
-        const targetPose: Pose = {
-          cx:
-            referencePose.cx +
-            dx,
-          cy:
-            referencePose.cy +
-            dy,
-          angle:
-            referencePose.angle,
-        };
+        const targetCx =
+          referencePose.cx +
+          dx;
 
-        const transformed =
-          transformBinaryMap(
-            currentMask,
-            width,
-            height,
-            currentPose,
-            targetPose,
-            rotation,
-          );
+        const targetCy =
+          referencePose.cy +
+          dy;
 
-        const forward =
-          overlapScore(
-            referenceMask,
-            transformed,
-            width,
-            height,
-            10,
-          );
+        let matched = 0;
+        let valid = 0;
 
-        const backward =
-          overlapScore(
-            transformed,
-            referenceMask,
-            width,
-            height,
-            10,
-          );
+        for (
+          const point
+          of currentPoints
+        ) {
+          const px =
+            point.x -
+            currentPose.cx;
+
+          const py =
+            point.y -
+            currentPose.cy;
+
+          const transformedX =
+            targetCx +
+            cos * px -
+            sin * py;
+
+          const transformedY =
+            targetCy +
+            sin * px +
+            cos * py;
+
+          const nx =
+            Math.round(
+              transformedX,
+            );
+
+          const ny =
+            Math.round(
+              transformedY,
+            );
+
+          if (
+            nx < 0 ||
+            ny < 0 ||
+            nx >= width ||
+            ny >= height
+          ) {
+            continue;
+          }
+
+          valid += 1;
+
+          if (
+            referenceTolerance[
+              ny *
+                width +
+                nx
+            ]
+          ) {
+            matched += 1;
+          }
+        }
 
         const score =
-          Math.min(
-            forward,
-            backward,
-          );
+          valid > 0
+            ? matched /
+              valid
+            : 0;
 
         if (
           score >
@@ -1261,7 +1834,14 @@ function findBestRegistration(
             rotation;
 
           bestTargetPose =
-            targetPose;
+            {
+              cx:
+                targetCx,
+              cy:
+                targetCy,
+              angle:
+                referencePose.angle,
+            };
         }
       }
     }
@@ -1275,6 +1855,223 @@ function findBestRegistration(
       bestRotation,
   };
 }
+
+/* =========================================================
+   IMAGE TRANSFORM
+   ========================================================= */
+
+function transformImage(
+  source: ImageData,
+  sourcePose: Pose,
+  targetPose: Pose,
+  rotation: number,
+): ImageData {
+  const {
+    width,
+    height,
+  } = source;
+
+  const output =
+    new ImageData(
+      width,
+      height,
+    );
+
+  /*
+    Neutrale achtergrond.
+  */
+
+  for (
+    let index = 0;
+    index <
+    output.data.length;
+    index += 4
+  ) {
+    output.data[
+      index
+    ] = 238;
+
+    output.data[
+      index + 1
+    ] = 238;
+
+    output.data[
+      index + 2
+    ] = 238;
+
+    output.data[
+      index + 3
+    ] = 255;
+  }
+
+  const cos =
+    Math.cos(
+      -rotation,
+    );
+
+  const sin =
+    Math.sin(
+      -rotation,
+    );
+
+  for (
+    let y = 0;
+    y < height;
+    y += 1
+  ) {
+    for (
+      let x = 0;
+      x < width;
+      x += 1
+    ) {
+      const dx =
+        x -
+        targetPose.cx;
+
+      const dy =
+        y -
+        targetPose.cy;
+
+      const sourceX =
+        sourcePose.cx +
+        cos * dx -
+        sin * dy;
+
+      const sourceY =
+        sourcePose.cy +
+        sin * dx +
+        cos * dy;
+
+      if (
+        sourceX < 0 ||
+        sourceY < 0 ||
+        sourceX >=
+          width - 1 ||
+        sourceY >=
+          height - 1
+      ) {
+        continue;
+      }
+
+      const x0 =
+        Math.floor(
+          sourceX,
+        );
+
+      const y0 =
+        Math.floor(
+          sourceY,
+        );
+
+      const x1 =
+        Math.min(
+          width - 1,
+          x0 + 1,
+        );
+
+      const y1 =
+        Math.min(
+          height - 1,
+          y0 + 1,
+        );
+
+      const fx =
+        sourceX - x0;
+
+      const fy =
+        sourceY - y0;
+
+      const outputIndex =
+        (
+          y *
+            width +
+          x
+        ) *
+        4;
+
+      for (
+        let channel = 0;
+        channel < 3;
+        channel += 1
+      ) {
+        const p00 =
+          source.data[
+            (
+              y0 *
+                width +
+              x0
+            ) *
+              4 +
+              channel
+          ];
+
+        const p10 =
+          source.data[
+            (
+              y0 *
+                width +
+              x1
+            ) *
+              4 +
+              channel
+          ];
+
+        const p01 =
+          source.data[
+            (
+              y1 *
+                width +
+              x0
+            ) *
+              4 +
+              channel
+          ];
+
+        const p11 =
+          source.data[
+            (
+              y1 *
+                width +
+              x1
+            ) *
+              4 +
+              channel
+          ];
+
+        const top =
+          p00 *
+            (1 - fx) +
+          p10 * fx;
+
+        const bottom =
+          p01 *
+            (1 - fx) +
+          p11 * fx;
+
+        output.data[
+          outputIndex +
+            channel
+        ] =
+          Math.round(
+            top *
+              (1 - fy) +
+              bottom *
+                fy,
+          );
+      }
+
+      output.data[
+        outputIndex + 3
+      ] = 255;
+    }
+  }
+
+  return output;
+}
+
+/* =========================================================
+   OVERLAY
+   ========================================================= */
 
 function createOverlayUrl(
   current: ImageData,
@@ -1294,62 +2091,112 @@ function createOverlayUrl(
   canvas.height =
     current.height;
 
-  const ctx =
+  const context =
     canvas.getContext("2d");
 
-  if (!ctx) {
+  if (!context) {
     throw new Error(
       "Canvas unavailable",
     );
   }
 
-  ctx.putImageData(
+  context.putImageData(
     current,
     0,
     0,
   );
 
   const overlay =
-    ctx.createImageData(
+    context.createImageData(
       current.width,
       current.height,
     );
 
   for (
-    let i = 0;
-    i < referenceEdges.length;
-    i += 1
+    let index = 0;
+    index <
+    referenceEdges.length;
+    index += 1
   ) {
-    const p = i * 4;
+    const pixel =
+      index * 4;
+
+    /*
+      GROEN:
+      verwachte contour gevonden
+    */
 
     if (
-      referenceEdges[i] &&
-      dilatedCurrent[i]
+      referenceEdges[index] &&
+      dilatedCurrent[index]
     ) {
-      overlay.data[p] = 34;
-      overlay.data[p + 1] = 197;
-      overlay.data[p + 2] = 94;
-      overlay.data[p + 3] = 235;
+      overlay.data[
+        pixel
+      ] = 34;
+
+      overlay.data[
+        pixel + 1
+      ] = 197;
+
+      overlay.data[
+        pixel + 2
+      ] = 94;
+
+      overlay.data[
+        pixel + 3
+      ] = 235;
     }
 
-    if (
-      referenceEdges[i] &&
-      !dilatedCurrent[i]
-    ) {
-      overlay.data[p] = 245;
-      overlay.data[p + 1] = 158;
-      overlay.data[p + 2] = 11;
-      overlay.data[p + 3] = 245;
-    }
+    /*
+      GEEL:
+      verwachte contour ontbreekt
+    */
 
     if (
-      currentEdges[i] &&
-      !dilatedReference[i]
+      referenceEdges[index] &&
+      !dilatedCurrent[index]
     ) {
-      overlay.data[p] = 220;
-      overlay.data[p + 1] = 38;
-      overlay.data[p + 2] = 38;
-      overlay.data[p + 3] = 245;
+      overlay.data[
+        pixel
+      ] = 245;
+
+      overlay.data[
+        pixel + 1
+      ] = 158;
+
+      overlay.data[
+        pixel + 2
+      ] = 11;
+
+      overlay.data[
+        pixel + 3
+      ] = 245;
+    }
+
+    /*
+      ROOD:
+      onverwachte contour
+    */
+
+    if (
+      currentEdges[index] &&
+      !dilatedReference[index]
+    ) {
+      overlay.data[
+        pixel
+      ] = 220;
+
+      overlay.data[
+        pixel + 1
+      ] = 38;
+
+      overlay.data[
+        pixel + 2
+      ] = 38;
+
+      overlay.data[
+        pixel + 3
+      ] = 245;
     }
   }
 
@@ -1372,9 +2219,10 @@ function createOverlayUrl(
       0,
     );
 
-  ctx.globalAlpha = 0.92;
+  context.globalAlpha =
+    0.92;
 
-  ctx.drawImage(
+  context.drawImage(
     overlayCanvas,
     0,
     0,
@@ -1385,6 +2233,10 @@ function createOverlayUrl(
     0.94,
   );
 }
+
+/* =========================================================
+   MAIN INSPECTION
+   ========================================================= */
 
 export function inspectAgainstReference(
   product: ProductId,
@@ -1397,6 +2249,11 @@ export function inspectAgainstReference(
   const height =
     NORMALIZED_HEIGHT;
 
+  /*
+    1. Masker maken voor globale
+       productregistratie
+  */
+
   const referenceMask =
     createProductMask(
       reference,
@@ -1407,6 +2264,11 @@ export function inspectAgainstReference(
       current,
     );
 
+  /*
+    2. Globale positie + rotatie
+       zoeken
+  */
+
   const registration =
     findBestRegistration(
       currentMask,
@@ -1415,6 +2277,11 @@ export function inspectAgainstReference(
       height,
     );
 
+  /*
+    3. Hele huidige foto
+       uitlijnen naar referentie
+  */
+
   const alignedImage =
     transformImage(
       current,
@@ -1422,6 +2289,10 @@ export function inspectAgainstReference(
       registration.targetPose,
       registration.rotation,
     );
+
+  /*
+    4. Pas nu contours maken
+  */
 
   const referenceEdges =
     createEdgeMap(
@@ -1432,6 +2303,10 @@ export function inspectAgainstReference(
     createEdgeMap(
       alignedImage,
     );
+
+  /*
+    5. Tolerantieband
+  */
 
   const dilatedReference =
     dilate(
@@ -1463,24 +2338,29 @@ export function inspectAgainstReference(
     );
 
   for (
-    let i = 0;
-    i < referenceEdges.length;
-    i += 1
+    let index = 0;
+    index <
+    referenceEdges.length;
+    index += 1
   ) {
     if (
-      referenceEdges[i] &&
-      dilatedCurrent[i]
+      referenceEdges[index] &&
+      dilatedCurrent[index]
     ) {
       referenceMatched += 1;
     }
 
     if (
-      currentEdges[i] &&
-      dilatedReference[i]
+      currentEdges[index] &&
+      dilatedReference[index]
     ) {
       currentMatched += 1;
     }
   }
+
+  /*
+    6. Scores
+  */
 
   const expectedContourFound =
     referenceEdgePixels > 0
@@ -1500,6 +2380,10 @@ export function inspectAgainstReference(
       currentContourInsideTolerance,
     );
 
+  /*
+    7. OK / NOK
+  */
+
   const status =
     expectedContourFound >=
       EXPECTED_CONTOUR_THRESHOLD &&
@@ -1512,14 +2396,19 @@ export function inspectAgainstReference(
     status,
     product,
     score,
+
     expectedContourFound,
     currentContourInsideTolerance,
+
     referenceEdgePixels,
     currentEdgePixels,
+
     expectedThreshold:
       EXPECTED_CONTOUR_THRESHOLD,
+
     placementThreshold:
       PLACEMENT_CONTOUR_THRESHOLD,
+
     overlayUrl:
       createOverlayUrl(
         alignedImage,
@@ -1530,6 +2419,10 @@ export function inspectAgainstReference(
       ),
   };
 }
+
+/* =========================================================
+   REFERENCES
+   ========================================================= */
 
 export function saveReference(
   product: ProductId,
@@ -1545,8 +2438,12 @@ export function saveReference(
   };
 
   localStorage.setItem(
-    REFERENCE_KEYS[product],
-    JSON.stringify(value),
+    REFERENCE_KEYS[
+      product
+    ],
+    JSON.stringify(
+      value,
+    ),
   );
 }
 
@@ -1556,7 +2453,9 @@ export function loadReference(
   try {
     const raw =
       localStorage.getItem(
-        REFERENCE_KEYS[product],
+        REFERENCE_KEYS[
+          product
+        ],
       );
 
     if (!raw) {
@@ -1570,7 +2469,8 @@ export function loadReference(
 
     if (
       !parsed.imageUrl ||
-      parsed.product !== product
+      parsed.product !==
+        product
     ) {
       return null;
     }
@@ -1585,6 +2485,8 @@ export function deleteReference(
   product: ProductId,
 ): void {
   localStorage.removeItem(
-    REFERENCE_KEYS[product],
+    REFERENCE_KEYS[
+      product
+    ],
   );
 }
