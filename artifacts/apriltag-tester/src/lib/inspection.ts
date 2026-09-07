@@ -19,9 +19,22 @@ export type StoredReference = {
   createdAt: number;
 };
 
+export type WheelCheck = {
+  id:
+    | "wheel-tl"
+    | "wheel-tr"
+    | "wheel-bl"
+    | "wheel-br";
+  label: string;
+  score: number;
+  threshold: number;
+  status: "ok" | "nok";
+};
+
 export type OverlayInspectionResult = {
   status: "ok" | "nok";
   product: ProductId;
+
   score: number;
 
   expectedContourFound: number;
@@ -33,16 +46,43 @@ export type OverlayInspectionResult = {
   expectedThreshold: number;
   placementThreshold: number;
 
+  wheelChecks: WheelCheck[];
+
   overlayUrl: string;
 };
 
 export const NORMALIZED_WIDTH = 810;
 export const NORMALIZED_HEIGHT = 650;
 
-export const EXPECTED_CONTOUR_THRESHOLD = 0.75;
-export const PLACEMENT_CONTOUR_THRESHOLD = 0.75;
+/*
+ * Algemene contourcontrole.
+ */
+export const EXPECTED_CONTOUR_THRESHOLD = 0.72;
+export const PLACEMENT_CONTOUR_THRESHOLD = 0.72;
 
+/*
+ * Elk wiel moet afzonderlijk voldoende overeenkomen.
+ *
+ * Startwaarde 60%.
+ * Dit kunnen we na echte tests nog aanpassen.
+ */
+export const WHEEL_THRESHOLD = 0.60;
+
+/*
+ * Tolerantie voor kleine verschillen in:
+ * - camerahoek
+ * - reflecties
+ * - AprilTag-detectie
+ * - montagepositie
+ */
 export const CONTOUR_TOLERANCE_PX = 18;
+
+/*
+ * Binnen een wielzone gebruiken we een iets kleinere
+ * tolerantie zodat een verkeerd geplaatst wiel niet
+ * te gemakkelijk goedgekeurd wordt.
+ */
+export const WHEEL_TOLERANCE_PX = 12;
 
 export const REFERENCE_KEYS: Record<
   ProductId,
@@ -50,6 +90,7 @@ export const REFERENCE_KEYS: Record<
 > = {
   product1:
     "sirris-overlay-reference-product1-v1",
+
   product2:
     "sirris-overlay-reference-product2-v1",
 };
@@ -71,11 +112,13 @@ function centerOf(
         sum.x +
         point.x /
           detection.corners.length,
+
       y:
         sum.y +
         point.y /
           detection.corners.length,
     }),
+
     {
       x: 0,
       y: 0,
@@ -89,12 +132,13 @@ function solveLinearSystem(
 ): number[] | null {
   const n = values.length;
 
-  const augmented = matrix.map(
-    (row, i) => [
-      ...row,
-      values[i],
-    ],
-  );
+  const augmented =
+    matrix.map(
+      (row, index) => [
+        ...row,
+        values[index],
+      ],
+    );
 
   for (
     let col = 0;
@@ -186,17 +230,23 @@ function homographyFromFourPoints(
 
   from.forEach(
     (point, index) => {
-      const target = to[index];
+      const target =
+        to[index];
 
       matrix.push([
         point.x,
         point.y,
         1,
+
         0,
         0,
         0,
-        -target.x * point.x,
-        -target.x * point.y,
+
+        -target.x *
+          point.x,
+
+        -target.x *
+          point.y,
       ]);
 
       values.push(
@@ -207,11 +257,16 @@ function homographyFromFourPoints(
         0,
         0,
         0,
+
         point.x,
         point.y,
         1,
-        -target.y * point.x,
-        -target.y * point.y,
+
+        -target.y *
+          point.x,
+
+        -target.y *
+          point.y,
       ]);
 
       values.push(
@@ -246,12 +301,13 @@ export function normalizeImage(
     );
 
   /*
-    Layout:
-    0 = TL
-    1 = TR
-    2 = BL
-    3 = BR
-  */
+   * AprilTag layout:
+   *
+   * 0 ------- 1
+   * |         |
+   * |         |
+   * 2 ------- 3
+   */
 
   const sourcePoints = [
     0,
@@ -283,22 +339,28 @@ export function normalizeImage(
         x: 0,
         y: 0,
       },
+
       {
         x:
           NORMALIZED_WIDTH -
           1,
+
         y: 0,
       },
+
       {
         x:
           NORMALIZED_WIDTH -
           1,
+
         y:
           NORMALIZED_HEIGHT -
           1,
       },
+
       {
         x: 0,
+
         y:
           NORMALIZED_HEIGHT -
           1,
@@ -334,8 +396,10 @@ export function normalizeImage(
       x += 1
     ) {
       const denominator =
-        homography[6] * x +
-        homography[7] * y +
+        homography[6] *
+          x +
+        homography[7] *
+          y +
         homography[8];
 
       const sx =
@@ -372,24 +436,29 @@ export function normalizeImage(
         sx < 0 ||
         sy < 0 ||
         sx >=
-          source.width - 1 ||
+          source.width -
+            1 ||
         sy >=
-          source.height - 1
+          source.height -
+            1
       ) {
         output.data[
           outputIndex
         ] = 240;
 
         output.data[
-          outputIndex + 1
+          outputIndex +
+            1
         ] = 240;
 
         output.data[
-          outputIndex + 2
+          outputIndex +
+            2
         ] = 240;
 
         output.data[
-          outputIndex + 3
+          outputIndex +
+            3
         ] = 255;
 
         continue;
@@ -403,13 +472,17 @@ export function normalizeImage(
 
       const x1 =
         Math.min(
-          source.width - 1,
+          source.width -
+            1,
+
           x0 + 1,
         );
 
       const y1 =
         Math.min(
-          source.height - 1,
+          source.height -
+            1,
+
           y0 + 1,
         );
 
@@ -471,12 +544,14 @@ export function normalizeImage(
         const top =
           p00 *
             (1 - dx) +
-          p10 * dx;
+          p10 *
+            dx;
 
         const bottom =
           p01 *
             (1 - dx) +
-          p11 * dx;
+          p11 *
+            dx;
 
         output.data[
           outputIndex +
@@ -485,12 +560,14 @@ export function normalizeImage(
           Math.round(
             top *
               (1 - dy) +
-              bottom * dy,
+              bottom *
+                dy,
           );
       }
 
       output.data[
-        outputIndex + 3
+        outputIndex +
+          3
       ] = 255;
     }
   }
@@ -518,7 +595,9 @@ export function imageDataToUrl(
     imageData.height;
 
   const context =
-    canvas.getContext("2d");
+    canvas.getContext(
+      "2d",
+    );
 
   if (!context) {
     throw new Error(
@@ -576,7 +655,9 @@ export async function imageUrlToImageData(
     NORMALIZED_HEIGHT;
 
   const context =
-    canvas.getContext("2d");
+    canvas.getContext(
+      "2d",
+    );
 
   if (!context) {
     throw new Error(
@@ -601,7 +682,7 @@ export async function imageUrlToImageData(
 }
 
 /* =========================================================
-   BASIC IMAGE PROCESSING
+   IMAGE PROCESSING
    ========================================================= */
 
 function luminance(
@@ -620,10 +701,12 @@ function luminance(
   return (
     image.data[index] *
       0.299 +
+
     image.data[
       index + 1
     ] *
       0.587 +
+
     image.data[
       index + 2
     ] *
@@ -660,7 +743,9 @@ function blurredGray(
       x += 1
     ) {
       gray[
-        y * width + x
+        y *
+          width +
+        x
       ] =
         luminance(
           image,
@@ -695,18 +780,22 @@ function blurredGray(
           sum +=
             gray[
               (
-                y + oy
+                y +
+                oy
               ) *
                 width +
-                (
-                  x + ox
-                )
+              (
+                x +
+                ox
+              )
             ];
         }
       }
 
       blurred[
-        y * width + x
+        y *
+          width +
+        x
       ] =
         sum / 9;
     }
@@ -724,14 +813,17 @@ function createEdgeMap(
   } = image;
 
   const gray =
-    blurredGray(image);
+    blurredGray(
+      image,
+    );
 
   const edges =
     new Uint8Array(
       width * height,
     );
 
-  const EDGE_THRESHOLD = 28;
+  const EDGE_THRESHOLD =
+    28;
 
   for (
     let y = 2;
@@ -747,7 +839,7 @@ function createEdgeMap(
         gray[
           y *
             width +
-            x -
+          x -
             1
         ];
 
@@ -755,26 +847,28 @@ function createEdgeMap(
         gray[
           y *
             width +
-            x +
+          x +
             1
         ];
 
       const top =
         gray[
           (
-            y - 1
+            y -
+            1
           ) *
             width +
-            x
+          x
         ];
 
       const bottom =
         gray[
           (
-            y + 1
+            y +
+            1
           ) *
             width +
-            x
+          x
         ];
 
       const gradient =
@@ -794,26 +888,27 @@ function createEdgeMap(
         edges[
           y *
             width +
-            x
+          x
         ] = 1;
       }
     }
   }
 
   /*
-    Buitenrand negeren zodat
-    AprilTags / rand van werkvlak
-    minder invloed hebben.
-  */
+   * AprilTags/rand van het
+   * werkvlak grotendeels negeren.
+   */
 
   const marginX =
     Math.round(
-      width * 0.045,
+      width *
+        0.045,
     );
 
   const marginY =
     Math.round(
-      height * 0.045,
+      height *
+        0.045,
     );
 
   for (
@@ -839,13 +934,100 @@ function createEdgeMap(
         edges[
           y *
             width +
-            x
+          x
         ] = 0;
       }
     }
   }
 
   return edges;
+}
+
+/* =========================================================
+   DARK COMPONENT MASK
+   ========================================================= */
+
+/*
+ * Voor de wielen gebruiken we bewust
+ * niet de algemene edges maar een masker
+ * voor donkere componenten.
+ *
+ * De wielen zijn zwart/donker en daardoor
+ * veel gemakkelijker afzonderlijk te controleren.
+ */
+
+function createDarkMask(
+  image: ImageData,
+): Uint8Array {
+  const {
+    width,
+    height,
+  } = image;
+
+  const mask =
+    new Uint8Array(
+      width *
+        height,
+    );
+
+  for (
+    let y = 0;
+    y < height;
+    y += 1
+  ) {
+    for (
+      let x = 0;
+      x < width;
+      x += 1
+    ) {
+      const index =
+        (
+          y *
+            width +
+          x
+        ) *
+        4;
+
+      const r =
+        image.data[
+          index
+        ];
+
+      const g =
+        image.data[
+          index + 1
+        ];
+
+      const b =
+        image.data[
+          index + 2
+        ];
+
+      const brightness =
+        (
+          r +
+          g +
+          b
+        ) /
+        3;
+
+      /*
+       * Donkere wielen / brackets.
+       */
+      if (
+        brightness <
+        95
+      ) {
+        mask[
+          y *
+            width +
+          x
+        ] = 1;
+      }
+    }
+  }
+
+  return mask;
 }
 
 /* =========================================================
@@ -877,7 +1059,7 @@ function dilate(
         !source[
           y *
             width +
-            x
+          x
         ]
       ) {
         continue;
@@ -896,8 +1078,10 @@ function dilate(
           ox += 1
         ) {
           if (
-            ox * ox +
-              oy * oy >
+            ox *
+              ox +
+              oy *
+                oy >
             radius *
               radius
           ) {
@@ -922,7 +1106,7 @@ function dilate(
           output[
             ny *
               width +
-              nx
+            nx
           ] = 1;
         }
       }
@@ -930,102 +1114,6 @@ function dilate(
   }
 
   return output;
-}
-
-function erode(
-  source: Uint8Array,
-  width: number,
-  height: number,
-  radius: number,
-): Uint8Array {
-  const output =
-    new Uint8Array(
-      source.length,
-    );
-
-  for (
-    let y = radius;
-    y <
-    height - radius;
-    y += 1
-  ) {
-    for (
-      let x = radius;
-      x <
-      width - radius;
-      x += 1
-    ) {
-      let keep = true;
-
-      for (
-        let oy =
-          -radius;
-        oy <= radius &&
-        keep;
-        oy += 1
-      ) {
-        for (
-          let ox =
-            -radius;
-          ox <= radius;
-          ox += 1
-        ) {
-          if (
-            ox * ox +
-              oy * oy >
-            radius *
-              radius
-          ) {
-            continue;
-          }
-
-          if (
-            !source[
-              (
-                y + oy
-              ) *
-                width +
-                (
-                  x + ox
-                )
-            ]
-          ) {
-            keep = false;
-            break;
-          }
-        }
-      }
-
-      if (keep) {
-        output[
-          y *
-            width +
-            x
-        ] = 1;
-      }
-    }
-  }
-
-  return output;
-}
-
-function closeMask(
-  source: Uint8Array,
-  width: number,
-  height: number,
-  radius: number,
-): Uint8Array {
-  return erode(
-    dilate(
-      source,
-      width,
-      height,
-      radius,
-    ),
-    width,
-    height,
-    radius,
-  );
 }
 
 function countOnes(
@@ -1039,7 +1127,9 @@ function countOnes(
     map.length;
     index += 1
   ) {
-    if (map[index]) {
+    if (
+      map[index]
+    ) {
       count += 1;
     }
   }
@@ -1065,197 +1155,24 @@ function rgbAt(
     4;
 
   return {
-    r: image.data[index],
+    r:
+      image.data[
+        index
+      ],
+
     g:
       image.data[
-        index + 1
+        index +
+          1
       ],
+
     b:
       image.data[
-        index + 2
+        index +
+          2
       ],
   };
 }
-
-function largestConnectedComponent(
-  source: Uint8Array,
-  width: number,
-  height: number,
-): Uint8Array {
-  const visited =
-    new Uint8Array(
-      source.length,
-    );
-
-  let best: number[] =
-    [];
-
-  const queueX =
-    new Int32Array(
-      width * height,
-    );
-
-  const queueY =
-    new Int32Array(
-      width * height,
-    );
-
-  for (
-    let startY = 0;
-    startY < height;
-    startY += 1
-  ) {
-    for (
-      let startX = 0;
-      startX < width;
-      startX += 1
-    ) {
-      const startIndex =
-        startY *
-          width +
-        startX;
-
-      if (
-        !source[
-          startIndex
-        ] ||
-        visited[
-          startIndex
-        ]
-      ) {
-        continue;
-      }
-
-      let head = 0;
-      let tail = 0;
-
-      queueX[tail] =
-        startX;
-
-      queueY[tail] =
-        startY;
-
-      tail += 1;
-
-      visited[
-        startIndex
-      ] = 1;
-
-      const pixels: number[] =
-        [];
-
-      while (
-        head < tail
-      ) {
-        const x =
-          queueX[head];
-
-        const y =
-          queueY[head];
-
-        head += 1;
-
-        pixels.push(
-          y *
-            width +
-            x,
-        );
-
-        for (
-          let oy = -1;
-          oy <= 1;
-          oy += 1
-        ) {
-          for (
-            let ox = -1;
-            ox <= 1;
-            ox += 1
-          ) {
-            if (
-              ox === 0 &&
-              oy === 0
-            ) {
-              continue;
-            }
-
-            const nx =
-              x + ox;
-
-            const ny =
-              y + oy;
-
-            if (
-              nx < 0 ||
-              ny < 0 ||
-              nx >= width ||
-              ny >= height
-            ) {
-              continue;
-            }
-
-            const nextIndex =
-              ny *
-                width +
-              nx;
-
-            if (
-              !source[
-                nextIndex
-              ] ||
-              visited[
-                nextIndex
-              ]
-            ) {
-              continue;
-            }
-
-            visited[
-              nextIndex
-            ] = 1;
-
-            queueX[tail] =
-              nx;
-
-            queueY[tail] =
-              ny;
-
-            tail += 1;
-          }
-        }
-      }
-
-      if (
-        pixels.length >
-        best.length
-      ) {
-        best = pixels;
-      }
-    }
-  }
-
-  const output =
-    new Uint8Array(
-      source.length,
-    );
-
-  for (
-    const index
-    of best
-  ) {
-    output[index] = 1;
-  }
-
-  return output;
-}
-
-/*
-  Dit masker is enkel bedoeld
-  om de globale positie en rotatie
-  van het volledige product te bepalen.
-
-  Eindbeslissing gebeurt nog altijd
-  via contourvergelijking.
-*/
 
 function createProductMask(
   image: ImageData,
@@ -1267,37 +1184,18 @@ function createProductMask(
 
   const mask =
     new Uint8Array(
-      width * height,
-    );
-
-  const minX =
-    Math.round(
-      width * 0.05,
-    );
-
-  const maxX =
-    Math.round(
-      width * 0.95,
-    );
-
-  const minY =
-    Math.round(
-      height * 0.05,
-    );
-
-  const maxY =
-    Math.round(
-      height * 0.95,
+      width *
+        height,
     );
 
   for (
-    let y = minY;
-    y < maxY;
+    let y = 0;
+    y < height;
     y += 1
   ) {
     for (
-      let x = minX;
-      x < maxX;
+      let x = 0;
+      x < width;
       x += 1
     ) {
       const {
@@ -1337,13 +1235,21 @@ function createProductMask(
         ) /
         3;
 
+      /*
+       * Aluminium
+       */
       const aluminium =
         brightness >=
           145 &&
-        saturation <= 80;
+        saturation <=
+          80;
 
+      /*
+       * Wielen / donkere componenten
+       */
       const darkPart =
-        brightness <= 80;
+        brightness <=
+        85;
 
       if (
         aluminium ||
@@ -1352,37 +1258,147 @@ function createProductMask(
         mask[
           y *
             width +
-            x
+          x
         ] = 1;
       }
     }
   }
 
-  let cleaned =
-    closeMask(
-      mask,
-      width,
-      height,
-      3,
-    );
-
-  cleaned =
-    dilate(
-      cleaned,
-      width,
-      height,
-      2,
-    );
-
-  return largestConnectedComponent(
-    cleaned,
-    width,
-    height,
-  );
+  return mask;
 }
 
 /* =========================================================
-   POSE
+   PRODUCT BOUNDING BOX
+   ========================================================= */
+
+type BoundingBox = {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+
+  width: number;
+  height: number;
+};
+
+function getBoundingBox(
+  mask: Uint8Array,
+  width: number,
+  height: number,
+): BoundingBox {
+  let minX =
+    width;
+
+  let minY =
+    height;
+
+  let maxX = 0;
+  let maxY = 0;
+
+  let found =
+    false;
+
+  for (
+    let y = 0;
+    y < height;
+    y += 1
+  ) {
+    for (
+      let x = 0;
+      x < width;
+      x += 1
+    ) {
+      if (
+        !mask[
+          y *
+            width +
+          x
+        ]
+      ) {
+        continue;
+      }
+
+      found = true;
+
+      minX =
+        Math.min(
+          minX,
+          x,
+        );
+
+      minY =
+        Math.min(
+          minY,
+          y,
+        );
+
+      maxX =
+        Math.max(
+          maxX,
+          x,
+        );
+
+      maxY =
+        Math.max(
+          maxY,
+          y,
+        );
+    }
+  }
+
+  if (!found) {
+    return {
+      x1:
+        width *
+        0.2,
+
+      y1:
+        height *
+        0.2,
+
+      x2:
+        width *
+        0.8,
+
+      y2:
+        height *
+        0.8,
+
+      width:
+        width *
+        0.6,
+
+      height:
+        height *
+        0.6,
+    };
+  }
+
+  return {
+    x1:
+      minX,
+
+    y1:
+      minY,
+
+    x2:
+      maxX,
+
+    y2:
+      maxY,
+
+    width:
+      maxX -
+      minX,
+
+    height:
+      maxY -
+      minY,
+  };
+}
+
+/* =========================================================
+   GLOBAL POSE
    ========================================================= */
 
 type Pose = {
@@ -1397,6 +1413,7 @@ function estimatePose(
   height: number,
 ): Pose {
   let count = 0;
+
   let sumX = 0;
   let sumY = 0;
 
@@ -1414,31 +1431,41 @@ function estimatePose(
         !mask[
           y *
             width +
-            x
+          x
         ]
       ) {
         continue;
       }
 
       count += 1;
+
       sumX += x;
       sumY += y;
     }
   }
 
-  if (count < 100) {
+  if (
+    count <
+    100
+  ) {
     return {
-      cx: width / 2,
-      cy: height / 2,
+      cx:
+        width / 2,
+
+      cy:
+        height / 2,
+
       angle: 0,
     };
   }
 
   const cx =
-    sumX / count;
+    sumX /
+    count;
 
   const cy =
-    sumY / count;
+    sumY /
+    count;
 
   let xx = 0;
   let yy = 0;
@@ -1458,7 +1485,7 @@ function estimatePose(
         !mask[
           y *
             width +
-            x
+          x
         ]
       ) {
         continue;
@@ -1471,21 +1498,27 @@ function estimatePose(
         y - cy;
 
       xx +=
-        dx * dx;
+        dx *
+        dx;
 
       yy +=
-        dy * dy;
+        dy *
+        dy;
 
       xy +=
-        dx * dy;
+        dx *
+        dy;
     }
   }
 
   const angle =
     0.5 *
     Math.atan2(
-      2 * xy,
-      xx - yy,
+      2 *
+        xy,
+
+      xx -
+        yy,
     );
 
   return {
@@ -1496,7 +1529,7 @@ function estimatePose(
 }
 
 /* =========================================================
-   FAST REGISTRATION
+   FAST ALIGNMENT
    ========================================================= */
 
 type MaskPoint = {
@@ -1508,7 +1541,8 @@ function sampleMaskPoints(
   mask: Uint8Array,
   width: number,
   height: number,
-  maxPoints = 1600,
+  maxPoints =
+    1400,
 ): MaskPoint[] {
   let total = 0;
 
@@ -1518,18 +1552,23 @@ function sampleMaskPoints(
     mask.length;
     index += 1
   ) {
-    if (mask[index]) {
+    if (
+      mask[index]
+    ) {
       total += 1;
     }
   }
 
-  if (total === 0) {
+  if (
+    total === 0
+  ) {
     return [];
   }
 
   const step =
     Math.max(
       1,
+
       Math.floor(
         total /
           maxPoints,
@@ -1555,14 +1594,15 @@ function sampleMaskPoints(
         !mask[
           y *
             width +
-            x
+          x
         ]
       ) {
         continue;
       }
 
       if (
-        seen % step ===
+        seen %
+          step ===
         0
       ) {
         points.push({
@@ -1613,126 +1653,97 @@ function findBestRegistration(
     referencePose.angle -
     currentPose.angle;
 
-  /*
-    Referentiemasker krijgt
-    tijdens de zoektocht
-    wat extra tolerantie.
-  */
-
   const referenceTolerance =
     dilate(
       referenceMask,
       width,
       height,
-      12,
+      14,
     );
 
-  /*
-    Slechts een steekproef
-    van het productmasker
-    gebruiken voor alignment.
-  */
-
-  const currentPoints =
+  const points =
     sampleMaskPoints(
       currentMask,
       width,
       height,
-      1600,
+      1400,
     );
 
   if (
-    currentPoints.length ===
+    points.length ===
     0
   ) {
     return {
       currentPose,
+
       targetPose:
         referencePose,
+
       rotation:
         initialRotation,
     };
   }
 
-  /*
-    PCA geeft al een grove hoek.
-    Daarom alleen rond die hoek zoeken.
-  */
-
-  const angleOffsetsDeg =
+  const angleOffsets =
     [
-      -45,
-      -30,
+      -35,
       -20,
-      -12,
-      -6,
+      -10,
+      -5,
       0,
-      6,
-      12,
+      5,
+      10,
       20,
-      30,
-      45,
+      35,
     ];
 
-  const angleCandidates: number[] =
+  const candidateAngles: number[] =
     [];
 
   for (
     const degrees
-    of angleOffsetsDeg
+    of angleOffsets
   ) {
     const offset =
-      (
-        degrees *
-        Math.PI
-      ) /
+      degrees *
+      Math.PI /
       180;
 
-    angleCandidates.push(
+    candidateAngles.push(
       initialRotation +
         offset,
     );
 
-    /*
-      PCA heeft 180° ambiguïteit.
-    */
-
-    angleCandidates.push(
+    candidateAngles.push(
       initialRotation +
         Math.PI +
         offset,
     );
   }
 
-  /*
-    Centroid zorgt al voor
-    grove translation alignment.
-
-    Enkel nog lokaal verfijnen.
-  */
-
-  const translationOffsets =
+  const translations =
     [
-      -20,
-      -10,
+      -16,
+      -8,
       0,
-      10,
-      20,
+      8,
+      16,
     ];
 
-  let bestScore = -1;
+  let bestScore =
+    -1;
 
   let bestRotation =
     initialRotation;
 
-  let bestTargetPose: Pose =
+  let bestTarget: Pose =
     {
       ...referencePose,
     };
 
   for (
     const rotation
-    of angleCandidates
+    of candidateAngles
   ) {
     const cos =
       Math.cos(
@@ -1746,17 +1757,17 @@ function findBestRegistration(
 
     for (
       const dx
-      of translationOffsets
+      of translations
     ) {
       for (
         const dy
-        of translationOffsets
+        of translations
       ) {
-        const targetCx =
+        const cx =
           referencePose.cx +
           dx;
 
-        const targetCy =
+        const cy =
           referencePose.cy +
           dy;
 
@@ -1765,7 +1776,7 @@ function findBestRegistration(
 
         for (
           const point
-          of currentPoints
+          of points
         ) {
           const px =
             point.x -
@@ -1775,24 +1786,28 @@ function findBestRegistration(
             point.y -
             currentPose.cy;
 
-          const transformedX =
-            targetCx +
-            cos * px -
-            sin * py;
+          const tx =
+            cx +
+            cos *
+              px -
+            sin *
+              py;
 
-          const transformedY =
-            targetCy +
-            sin * px +
-            cos * py;
+          const ty =
+            cy +
+            sin *
+              px +
+            cos *
+              py;
 
           const nx =
             Math.round(
-              transformedX,
+              tx,
             );
 
           const ny =
             Math.round(
-              transformedY,
+              ty,
             );
 
           if (
@@ -1810,7 +1825,7 @@ function findBestRegistration(
             referenceTolerance[
               ny *
                 width +
-                nx
+              nx
             ]
           ) {
             matched += 1;
@@ -1833,12 +1848,11 @@ function findBestRegistration(
           bestRotation =
             rotation;
 
-          bestTargetPose =
+          bestTarget =
             {
-              cx:
-                targetCx,
-              cy:
-                targetCy,
+              cx,
+              cy,
+
               angle:
                 referencePose.angle,
             };
@@ -1849,15 +1863,17 @@ function findBestRegistration(
 
   return {
     currentPose,
+
     targetPose:
-      bestTargetPose,
+      bestTarget,
+
     rotation:
       bestRotation,
   };
 }
 
 /* =========================================================
-   IMAGE TRANSFORM
+   IMAGE TRANSFORMATION
    ========================================================= */
 
 function transformImage(
@@ -1876,10 +1892,6 @@ function transformImage(
       width,
       height,
     );
-
-  /*
-    Neutrale achtergrond.
-  */
 
   for (
     let index = 0;
@@ -1934,52 +1946,48 @@ function transformImage(
 
       const sourceX =
         sourcePose.cx +
-        cos * dx -
-        sin * dy;
+        cos *
+          dx -
+        sin *
+          dy;
 
       const sourceY =
         sourcePose.cy +
-        sin * dx +
-        cos * dy;
+        sin *
+          dx +
+        cos *
+          dy;
 
       if (
         sourceX < 0 ||
         sourceY < 0 ||
         sourceX >=
-          width - 1 ||
+          width -
+            1 ||
         sourceY >=
-          height - 1
+          height -
+            1
       ) {
         continue;
       }
 
-      const x0 =
-        Math.floor(
+      const sx =
+        Math.round(
           sourceX,
         );
 
-      const y0 =
-        Math.floor(
+      const sy =
+        Math.round(
           sourceY,
         );
 
-      const x1 =
-        Math.min(
-          width - 1,
-          x0 + 1,
-        );
-
-      const y1 =
-        Math.min(
-          height - 1,
-          y0 + 1,
-        );
-
-      const fx =
-        sourceX - x0;
-
-      const fy =
-        sourceY - y0;
+      const sourceIndex =
+        (
+          sy *
+            width +
+          sx
+        ) *
+        4;
 
       const outputIndex =
         (
@@ -1989,79 +1997,34 @@ function transformImage(
         ) *
         4;
 
-      for (
-        let channel = 0;
-        channel < 3;
-        channel += 1
-      ) {
-        const p00 =
-          source.data[
-            (
-              y0 *
-                width +
-              x0
-            ) *
-              4 +
-              channel
-          ];
-
-        const p10 =
-          source.data[
-            (
-              y0 *
-                width +
-              x1
-            ) *
-              4 +
-              channel
-          ];
-
-        const p01 =
-          source.data[
-            (
-              y1 *
-                width +
-              x0
-            ) *
-              4 +
-              channel
-          ];
-
-        const p11 =
-          source.data[
-            (
-              y1 *
-                width +
-              x1
-            ) *
-              4 +
-              channel
-          ];
-
-        const top =
-          p00 *
-            (1 - fx) +
-          p10 * fx;
-
-        const bottom =
-          p01 *
-            (1 - fx) +
-          p11 * fx;
-
-        output.data[
-          outputIndex +
-            channel
-        ] =
-          Math.round(
-            top *
-              (1 - fy) +
-              bottom *
-                fy,
-          );
-      }
+      output.data[
+        outputIndex
+      ] =
+        source.data[
+          sourceIndex
+        ];
 
       output.data[
-        outputIndex + 3
+        outputIndex +
+          1
+      ] =
+        source.data[
+          sourceIndex +
+            1
+        ];
+
+      output.data[
+        outputIndex +
+          2
+      ] =
+        source.data[
+          sourceIndex +
+            2
+        ];
+
+      output.data[
+        outputIndex +
+          3
       ] = 255;
     }
   }
@@ -2070,15 +2033,370 @@ function transformImage(
 }
 
 /* =========================================================
+   WHEEL REGIONS
+   ========================================================= */
+
+type Region = {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+};
+
+function createWheelRegions(
+  referenceMask: Uint8Array,
+  width: number,
+  height: number,
+): Record<
+  WheelCheck["id"],
+  Region
+> {
+  const box =
+    getBoundingBox(
+      referenceMask,
+      width,
+      height,
+    );
+
+  /*
+   * Elk wiel krijgt een gebied rond
+   * één hoek van de productboundingbox.
+   *
+   * Groot genoeg voor kleine montagevariaties,
+   * maar klein genoeg om de vier wielen
+   * apart te controleren.
+   */
+
+  const regionWidth =
+    Math.max(
+      75,
+
+      box.width *
+        0.32,
+    );
+
+  const regionHeight =
+    Math.max(
+      75,
+
+      box.height *
+        0.32,
+    );
+
+  return {
+    "wheel-tl": {
+      x1:
+        box.x1 -
+        regionWidth *
+          0.15,
+
+      y1:
+        box.y1 -
+        regionHeight *
+          0.15,
+
+      x2:
+        box.x1 +
+        regionWidth,
+
+      y2:
+        box.y1 +
+        regionHeight,
+    },
+
+    "wheel-tr": {
+      x1:
+        box.x2 -
+        regionWidth,
+
+      y1:
+        box.y1 -
+        regionHeight *
+          0.15,
+
+      x2:
+        box.x2 +
+        regionWidth *
+          0.15,
+
+      y2:
+        box.y1 +
+        regionHeight,
+    },
+
+    "wheel-bl": {
+      x1:
+        box.x1 -
+        regionWidth *
+          0.15,
+
+      y1:
+        box.y2 -
+        regionHeight,
+
+      x2:
+        box.x1 +
+        regionWidth,
+
+      y2:
+        box.y2 +
+        regionHeight *
+          0.15,
+    },
+
+    "wheel-br": {
+      x1:
+        box.x2 -
+        regionWidth,
+
+      y1:
+        box.y2 -
+        regionHeight,
+
+      x2:
+        box.x2 +
+        regionWidth *
+          0.15,
+
+      y2:
+        box.y2 +
+        regionHeight *
+          0.15,
+    },
+  };
+}
+
+function scoreRegion(
+  reference: Uint8Array,
+  current: Uint8Array,
+  width: number,
+  height: number,
+  region: Region,
+): number {
+  const toleranceCurrent =
+    dilate(
+      current,
+      width,
+      height,
+      WHEEL_TOLERANCE_PX,
+    );
+
+  let referencePixels =
+    0;
+
+  let matched =
+    0;
+
+  const x1 =
+    Math.max(
+      0,
+
+      Math.floor(
+        region.x1,
+      ),
+    );
+
+  const y1 =
+    Math.max(
+      0,
+
+      Math.floor(
+        region.y1,
+      ),
+    );
+
+  const x2 =
+    Math.min(
+      width -
+        1,
+
+      Math.ceil(
+        region.x2,
+      ),
+    );
+
+  const y2 =
+    Math.min(
+      height -
+        1,
+
+      Math.ceil(
+        region.y2,
+      ),
+    );
+
+  for (
+    let y = y1;
+    y <= y2;
+    y += 1
+  ) {
+    for (
+      let x = x1;
+      x <= x2;
+      x += 1
+    ) {
+      const index =
+        y *
+          width +
+        x;
+
+      if (
+        !reference[
+          index
+        ]
+      ) {
+        continue;
+      }
+
+      referencePixels +=
+        1;
+
+      if (
+        toleranceCurrent[
+          index
+        ]
+      ) {
+        matched += 1;
+      }
+    }
+  }
+
+  if (
+    referencePixels <
+    20
+  ) {
+    /*
+     * Geen bruikbare donkere referentie
+     * gevonden in deze zone.
+     *
+     * Dit voorkomt dat ruis automatisch NOK geeft.
+     */
+    return 1;
+  }
+
+  return (
+    matched /
+    referencePixels
+  );
+}
+
+function runWheelChecks(
+  referenceImage: ImageData,
+  currentImage: ImageData,
+  referenceProductMask: Uint8Array,
+): WheelCheck[] {
+  const width =
+    referenceImage.width;
+
+  const height =
+    referenceImage.height;
+
+  const referenceDark =
+    createDarkMask(
+      referenceImage,
+    );
+
+  const currentDark =
+    createDarkMask(
+      currentImage,
+    );
+
+  const regions =
+    createWheelRegions(
+      referenceProductMask,
+      width,
+      height,
+    );
+
+  const definitions: Array<{
+    id: WheelCheck["id"];
+    label: string;
+  }> = [
+    {
+      id:
+        "wheel-tl",
+
+      label:
+        "Wiel linksboven",
+    },
+
+    {
+      id:
+        "wheel-tr",
+
+      label:
+        "Wiel rechtsboven",
+    },
+
+    {
+      id:
+        "wheel-bl",
+
+      label:
+        "Wiel linksonder",
+    },
+
+    {
+      id:
+        "wheel-br",
+
+      label:
+        "Wiel rechtsonder",
+    },
+  ];
+
+  return definitions.map(
+    ({
+      id,
+      label,
+    }) => {
+      const score =
+        scoreRegion(
+          referenceDark,
+          currentDark,
+          width,
+          height,
+          regions[id],
+        );
+
+      return {
+        id,
+
+        label,
+
+        score,
+
+        threshold:
+          WHEEL_THRESHOLD,
+
+        status:
+          score >=
+          WHEEL_THRESHOLD
+            ? "ok"
+            : "nok",
+      };
+    },
+  );
+}
+
+/* =========================================================
    OVERLAY
    ========================================================= */
 
 function createOverlayUrl(
   current: ImageData,
+
   referenceEdges: Uint8Array,
+
   currentEdges: Uint8Array,
+
   dilatedReference: Uint8Array,
+
   dilatedCurrent: Uint8Array,
+
+  wheelChecks: WheelCheck[],
+
+  referenceMask: Uint8Array,
 ): string {
   const canvas =
     document.createElement(
@@ -2092,7 +2410,9 @@ function createOverlayUrl(
     current.height;
 
   const context =
-    canvas.getContext("2d");
+    canvas.getContext(
+      "2d",
+    );
 
   if (!context) {
     throw new Error(
@@ -2119,16 +2439,19 @@ function createOverlayUrl(
     index += 1
   ) {
     const pixel =
-      index * 4;
+      index *
+      4;
 
     /*
-      GROEN:
-      verwachte contour gevonden
-    */
-
+     * GROEN
+     */
     if (
-      referenceEdges[index] &&
-      dilatedCurrent[index]
+      referenceEdges[
+        index
+      ] &&
+      dilatedCurrent[
+        index
+      ]
     ) {
       overlay.data[
         pixel
@@ -2144,17 +2467,19 @@ function createOverlayUrl(
 
       overlay.data[
         pixel + 3
-      ] = 235;
+      ] = 220;
     }
 
     /*
-      GEEL:
-      verwachte contour ontbreekt
-    */
-
+     * GEEL
+     */
     if (
-      referenceEdges[index] &&
-      !dilatedCurrent[index]
+      referenceEdges[
+        index
+      ] &&
+      !dilatedCurrent[
+        index
+      ]
     ) {
       overlay.data[
         pixel
@@ -2170,17 +2495,19 @@ function createOverlayUrl(
 
       overlay.data[
         pixel + 3
-      ] = 245;
+      ] = 235;
     }
 
     /*
-      ROOD:
-      onverwachte contour
-    */
-
+     * ROOD
+     */
     if (
-      currentEdges[index] &&
-      !dilatedReference[index]
+      currentEdges[
+        index
+      ] &&
+      !dilatedReference[
+        index
+      ]
     ) {
       overlay.data[
         pixel
@@ -2196,7 +2523,7 @@ function createOverlayUrl(
 
       overlay.data[
         pixel + 3
-      ] = 245;
+      ] = 235;
     }
   }
 
@@ -2212,21 +2539,89 @@ function createOverlayUrl(
     current.height;
 
   overlayCanvas
-    .getContext("2d")
+    .getContext(
+      "2d",
+    )
     ?.putImageData(
       overlay,
       0,
       0,
     );
 
-  context.globalAlpha =
-    0.92;
-
   context.drawImage(
     overlayCanvas,
     0,
     0,
   );
+
+  /*
+   * Wielzones ook zichtbaar tekenen.
+   */
+
+  const wheelRegions =
+    createWheelRegions(
+      referenceMask,
+
+      current.width,
+
+      current.height,
+    );
+
+  context.lineWidth = 4;
+
+  context.font =
+    "bold 14px Arial";
+
+  for (
+    const check
+    of wheelChecks
+  ) {
+    const region =
+      wheelRegions[
+        check.id
+      ];
+
+    if (
+      check.status ===
+      "ok"
+    ) {
+      context.strokeStyle =
+        "#22c55e";
+
+      context.fillStyle =
+        "#22c55e";
+    } else {
+      context.strokeStyle =
+        "#dc2626";
+
+      context.fillStyle =
+        "#dc2626";
+    }
+
+    context.strokeRect(
+      region.x1,
+      region.y1,
+
+      region.x2 -
+        region.x1,
+
+      region.y2 -
+        region.y1,
+    );
+
+    context.fillText(
+      `${check.label}: ${Math.round(
+        check.score *
+          100,
+      )}%`,
+
+      region.x1 +
+        4,
+
+      region.y1 +
+        18,
+    );
+  }
 
   return canvas.toDataURL(
     "image/jpeg",
@@ -2250,9 +2645,8 @@ export function inspectAgainstReference(
     NORMALIZED_HEIGHT;
 
   /*
-    1. Masker maken voor globale
-       productregistratie
-  */
+   * 1. Productmasker maken.
+   */
 
   const referenceMask =
     createProductMask(
@@ -2265,9 +2659,8 @@ export function inspectAgainstReference(
     );
 
   /*
-    2. Globale positie + rotatie
-       zoeken
-  */
+   * 2. Hele product globaal uitlijnen.
+   */
 
   const registration =
     findBestRegistration(
@@ -2277,22 +2670,20 @@ export function inspectAgainstReference(
       height,
     );
 
-  /*
-    3. Hele huidige foto
-       uitlijnen naar referentie
-  */
-
   const alignedImage =
     transformImage(
       current,
+
       registration.currentPose,
+
       registration.targetPose,
+
       registration.rotation,
     );
 
   /*
-    4. Pas nu contours maken
-  */
+   * 3. Globale contourcontrole.
+   */
 
   const referenceEdges =
     createEdgeMap(
@@ -2304,28 +2695,33 @@ export function inspectAgainstReference(
       alignedImage,
     );
 
-  /*
-    5. Tolerantieband
-  */
-
   const dilatedReference =
     dilate(
       referenceEdges,
+
       width,
+
       height,
+
       CONTOUR_TOLERANCE_PX,
     );
 
   const dilatedCurrent =
     dilate(
       currentEdges,
+
       width,
+
       height,
+
       CONTOUR_TOLERANCE_PX,
     );
 
-  let referenceMatched = 0;
-  let currentMatched = 0;
+  let referenceMatched =
+    0;
+
+  let currentMatched =
+    0;
 
   const referenceEdgePixels =
     countOnes(
@@ -2344,63 +2740,156 @@ export function inspectAgainstReference(
     index += 1
   ) {
     if (
-      referenceEdges[index] &&
-      dilatedCurrent[index]
+      referenceEdges[
+        index
+      ] &&
+      dilatedCurrent[
+        index
+      ]
     ) {
-      referenceMatched += 1;
+      referenceMatched +=
+        1;
     }
 
     if (
-      currentEdges[index] &&
-      dilatedReference[index]
+      currentEdges[
+        index
+      ] &&
+      dilatedReference[
+        index
+      ]
     ) {
-      currentMatched += 1;
+      currentMatched +=
+        1;
     }
   }
 
-  /*
-    6. Scores
-  */
-
   const expectedContourFound =
-    referenceEdgePixels > 0
+    referenceEdgePixels >
+    0
       ? referenceMatched /
         referenceEdgePixels
+
       : 0;
 
   const currentContourInsideTolerance =
-    currentEdgePixels > 0
+    currentEdgePixels >
+    0
       ? currentMatched /
         currentEdgePixels
+
       : 0;
 
-  const score =
+  /*
+   * 4. Elk wiel afzonderlijk controleren.
+   */
+
+  const wheelChecks =
+    runWheelChecks(
+      reference,
+
+      alignedImage,
+
+      referenceMask,
+    );
+
+  const allWheelsOK =
+    wheelChecks.every(
+      (check) =>
+        check.status ===
+        "ok",
+    );
+
+  /*
+   * 5. Globale score.
+   */
+
+  const globalScore =
     Math.min(
       expectedContourFound,
+
       currentContourInsideTolerance,
     );
 
   /*
-    7. OK / NOK
-  */
+   * Ook slechtste wiel meenemen
+   * in de eindscore.
+   */
+
+  const weakestWheel =
+    Math.min(
+      ...wheelChecks.map(
+        (check) =>
+          check.score,
+      ),
+    );
+
+  const score =
+    Math.min(
+      globalScore,
+      weakestWheel,
+    );
+
+  /*
+   * 6. Quality gate.
+   *
+   * ALLES moet OK zijn:
+   *
+   * - globale contour
+   * - globale positie
+   * - wiel 1
+   * - wiel 2
+   * - wiel 3
+   * - wiel 4
+   */
 
   const status =
     expectedContourFound >=
       EXPECTED_CONTOUR_THRESHOLD &&
+
     currentContourInsideTolerance >=
-      PLACEMENT_CONTOUR_THRESHOLD
+      PLACEMENT_CONTOUR_THRESHOLD &&
+
+    allWheelsOK
+
       ? "ok"
+
       : "nok";
+
+  /*
+   * 7. Visuele overlay.
+   */
+
+  const overlayUrl =
+    createOverlayUrl(
+      alignedImage,
+
+      referenceEdges,
+
+      currentEdges,
+
+      dilatedReference,
+
+      dilatedCurrent,
+
+      wheelChecks,
+
+      referenceMask,
+    );
 
   return {
     status,
+
     product,
+
     score,
 
     expectedContourFound,
+
     currentContourInsideTolerance,
 
     referenceEdgePixels,
+
     currentEdgePixels,
 
     expectedThreshold:
@@ -2409,14 +2898,9 @@ export function inspectAgainstReference(
     placementThreshold:
       PLACEMENT_CONTOUR_THRESHOLD,
 
-    overlayUrl:
-      createOverlayUrl(
-        alignedImage,
-        referenceEdges,
-        currentEdges,
-        dilatedReference,
-        dilatedCurrent,
-      ),
+    wheelChecks,
+
+    overlayUrl,
   };
 }
 
@@ -2431,8 +2915,10 @@ export function saveReference(
   const value:
     StoredReference = {
     product,
+
     imageUrl:
       normalizedImageUrl,
+
     createdAt:
       Date.now(),
   };
@@ -2441,6 +2927,7 @@ export function saveReference(
     REFERENCE_KEYS[
       product
     ],
+
     JSON.stringify(
       value,
     ),
