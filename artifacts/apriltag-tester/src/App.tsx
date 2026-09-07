@@ -79,6 +79,16 @@ export default function App() {
     [],
   );
 
+  const embedMode = useMemo(
+    () => new URLSearchParams(window.location.search).get("embed") === "1",
+    [],
+  );
+
+  const forcedProduct = useMemo<ProductId>(() => {
+    const value = new URLSearchParams(window.location.search).get("product");
+    return value === "product2" ? "product2" : "product1";
+  }, []);
+
   const [pageMode, setPageMode] = useState<PageMode>(
     setupRequested ? "setup" : "control",
   );
@@ -88,7 +98,7 @@ export default function App() {
   const [pinError, setPinError] = useState(false);
 
   const [selectedProduct, setSelectedProduct] =
-    useState<ProductId>("product1");
+    useState<ProductId>(embedMode ? forcedProduct : "product1");
 
   const [cameraState, setCameraState] =
     useState<CameraState>("idle");
@@ -111,6 +121,33 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [success, setSuccess] = useState("");
+
+
+  useEffect(() => {
+    if (!embedMode) return;
+
+    selectedProductRef.current = forcedProduct;
+    setSelectedProduct(forcedProduct);
+  }, [embedMode, forcedProduct]);
+
+  useEffect(() => {
+    if (!embedMode || !result) return;
+
+    if (window.parent !== window) {
+      window.parent.postMessage(
+        {
+          type: "sirris-final-qc-result",
+          product: result.product,
+          status: result.status,
+          score: result.score,
+          expectedContourFound: result.expectedContourFound,
+          currentContourInsideTolerance: result.currentContourInsideTolerance,
+          timestamp: Date.now(),
+        },
+        window.location.origin,
+      );
+    }
+  }, [embedMode, result]);
 
   const browserSupported = Boolean(
     navigator.mediaDevices?.getUserMedia &&
@@ -649,16 +686,19 @@ export default function App() {
   const selectedReference = references[selectedProduct];
 
   return (
-    <div className="app-shell">
-      <header className="industrial-header">
-        <div>
-          <span className="eyebrow">CAMERA · EINDCONTROLE</span>
-          <h1>Visuele productcontrole</h1>
-        </div>
-      </header>
+    <div className={`app-shell ${embedMode ? "embedded" : ""}`}>
+      {!embedMode && (
+        <header className="industrial-header">
+          <div>
+            <span className="eyebrow">CAMERA · EINDCONTROLE</span>
+            <h1>Visuele productcontrole</h1>
+          </div>
+        </header>
+      )}
 
-      <main className="main-wrap">
-        <section className="info-card">
+      <main className={embedMode ? "main-wrap embedded-main" : "main-wrap"}>
+        {!embedMode && (
+          <section className="info-card">
           <Eye size={22} />
           <div>
             <strong>Contour-overlay met AprilTag-correctie</strong>
@@ -671,7 +711,9 @@ export default function App() {
             </p>
           </div>
         </section>
+        )}
 
+        {!embedMode && (
         <div className="product-grid">
           {(["product1", "product2"] as ProductId[]).map((product) => {
             const active = selectedProduct === product;
@@ -707,6 +749,7 @@ export default function App() {
             );
           })}
         </div>
+        )}
 
         {!selectedReference && (
           <Message kind="error">
